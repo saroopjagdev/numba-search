@@ -576,3 +576,59 @@ Throughput matters for planning the run, and the contention factor shows up here
 positions/s quiet against 10,400 contended, a 3.2x factor** consistent with everything else
 measured tonight. At that rate the full 60,000 steps at batch 16,384 is 983M samples, ~2.8 epochs,
 and **~9 hours**. Checkpoints every 5,000 steps, so a crash at hour eight costs 40 minutes.
+
+
+## Rated ladder, rounds 10-15 (analysed 5 Sep)
+
+| rd | opponent | col | init | mv | used | left | spent | slowest | result |
+|---|---|---|---|---|---|---|---|---|---|
+| 10 | The Good Boys | W | 0.6 s | 10 | 0.0 s | 125.0 s | 0% | 0.0 s | lost by checkmate |
+| 11 | ACESOFSPADES | B | 0.5 s | 11 | 0.0 s | 125.5 s | 0% | 0.0 s | lost by checkmate |
+| 12 | Minimax Three | B | 16.2 s | 22 | 24.7 s | 106.3 s | 19% | 3.9 s | **won by checkmate** |
+| 13 | Chess | W | 19.7 s | 27 | 42.5 s | 91.0 s | 32% | 4.0 s | **won by checkmate** |
+| 14 | Juan Titative | B | 19.1 s | 67 | 79.9 s | 73.6 s | 52% | 3.7 s | **won by checkmate** |
+| 15 | The Pawn | W | 19.3 s | 35 | 72.9 s | 64.6 s | 53% | 4.6 s | **won by checkmate** |
+
+Rounds 10-11 are the Phase 0 random agent, there to prove the upload path. The real engine is
+**4-0, every win by checkmate**, and nothing has ever been written to stderr -- no exception, no
+illegal-move fallback, no flag.
+
+### Init on the platform: 22% of budget, and the local factor holds
+
+16.2, 19.7, 19.1, 19.3 s against a 90 s budget. Local for that same build was 30-34 s, so the
+platform runs at **0.58x local** -- close enough to the "roughly half" assumption to keep using it.
+Applied to the NNUE build's 38-42.5 s quiet local, the prediction is **~23-25 s on the platform,
+about 27% of budget**. Comfortable, and it means the 8 s of extra compile costs nothing that
+matters.
+
+### The node-cap fix, confirmed in production
+
+The SPRT never returned a verdict; the ladder answered the question more directly. Per-move times,
+non-mating phase:
+
+    round 13, before:  0.3 4.0 0.5 0.1 3.5 0.1 2.7 0.1 3.8 2.4 0.1 0.1 2.9 3.6 2.2 2.8 2.6 3.3 2.1 0.1 0.2 3.1 2.0
+    round 15, after:   3.1 3.4 3.8 2.3 2.6 3.1 2.8 2.9 2.7 1.5 1.9 4.6 2.7 2.9 1.1 2.3 1.6 1.9 2.0 2.8 1.8 1.4 2.3 1.8 2.0 1.6 1.8 1.9 1.5 1.6 1.7 1.4
+
+Before, **9 of 23 moves returned in 0.5 s or less** while three seconds of budget went unspent --
+the exact symptom the fix targeted, the search aborting on the branching-factor cap as soon as the
+transposition table answered the early depths cheaply. After, **0 of 32**, and the distribution is
+flat between 1.1 and 4.6 s. Clock actually spent went from 32% to 53%.
+
+Round 14 also shows many fast moves and is *not* evidence either way: the engine won a queen on
+move 4 (Nxd1), so a forced mate sat in the table for most of the game and iterative deepening was
+genuinely free. A rout looks like the bug and is not.
+
+### Two open items, both quantified, neither acted on yet
+
+**We spend about half the clock.** Even the cleanest game left 64.6 s of 137.5 s unused. The cause
+is structural, not a bug: `ASSUMED_MOVES_LEFT = 30` never adapts, so a 35-move game budgets as
+though 30 moves always remain. Doubling effective thinking time is worth roughly a ply. This is
+plausibly as large as the entire NNUE gain and it is one constant -- which is exactly why it must
+go through SPRT rather than straight in.
+
+**One move in 35 overran its budget by half.** Round 15 move 12 took 4.6 s against a computed
+budget of 3.0 s (95.9 s left: `(95840/30 + 375) * 0.85`). Move 1 of round 14 matched its budget to
+0.0 s, so this is not a systematic miscalculation but a single iteration running long -- the known
+failure mode where nothing can interrupt a jitted call once started. It was harmless with 91 s on
+the clock and would not be at 5 s. It is also the direct argument against simply raising the
+budget: the overrun is proportional to what we hand a single iteration.
