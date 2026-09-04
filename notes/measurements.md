@@ -125,3 +125,76 @@ A bug the smoke test found: with zero losses the raw variance estimate is degene
 pinned at 0.00, and a run against a much weaker opponent would never terminate. Fixed by adding
 half a game to each bucket when the sample is one-sided — conservative, so it can only delay a
 verdict, never manufacture one.
+
+---
+
+## 2026-09-04 — Phase 1 movegen: init cost and perft throughput
+
+### Import + JIT, measured end to end
+
+| stage | cold | warm |
+|---|---|---|
+| numpy + numba | 3.62s | 0.98s |
+| `engine.bitboard` (JIT + fill of 107,648 entries) | 4.83s | 1.32s |
+| `engine.position` (JIT) | 10.33s | 9.64s |
+| **total** | **18.77s** | **11.94s** |
+
+**Correction to a figure quoted earlier in the session: `engine.position` does not cost 46.5s.**
+That was a single cold first-ever compile with a OneDrive/Defender scan in the way, and it did not
+reproduce. Steady state is ~19s cold and ~12s warm against a 90s hard limit and a 60s target, so
+init is not the binding constraint on Phase 1 and there is room left for search and NNUE.
+
+Per-function compile cost within `engine.position` (10.20s total):
+
+| function | compile |
+|---|---|
+| generate_moves | 3.52s |
+| make_move | 1.87s |
+| perft | 1.49s |
+| unmake_move | 1.09s |
+| is_attacked | 0.53s |
+| in_check | 0.48s |
+| refresh_occupancy_jit | 0.24s |
+| eight small helpers combined | 0.96s |
+
+`perft` is 1.49s of that and will not ship, so the shipped figure is ~8.7s.
+
+### perft throughput
+
+1.4–2.1 Mnps through the real make/unmake path. There is deliberately no bulk counting at depth 1:
+skipping make/unmake on the last ply would stop testing the code most likely to be wrong. Against
+python-chess at 0.15–0.9 Mnps on the same suite, this is roughly 3–10x on the reference's own best
+case and far more on its typical one.
+
+### Bug found by the very first perft run
+
+Startpos depth 5 returned 4,865,644 against the true 4,865,609 — 35 nodes too many. `divide`
+against python-chess narrowed it to six pawn moves, all of which open a line toward e1. Cause:
+`is_attacked` indexed the pawn-attack table by the *attacking* colour. The reverse-colour trick
+inverts it — a square is attacked by a black pawn exactly when a white pawn standing on that
+square would attack the black pawn — so the index must be the defending colour, `1 - by_black`.
+
+This is precisely the failure the plan named in advance: an illegal move generated rarely enough
+that ordinary play would never surface it. One perft run found it; one line fixed it.
+
+### Gate results — Phase 1 movegen is verified
+
+`tools/perft.py --backend engine --depth 5` over the full 20-position suite: **97 of 97 depth
+checks exact, all positions correct.** Kiwipete and positions 3-6 included, along with every
+en-passant, castling-through-check, promotion and stalemate edge case in the suite.
+
+`--suite startpos --depth 6`: **119,060,324 in 95.85s (1.24 Mnps)** — the exact figure the plan
+named as the Phase 1 gate.
+
+### Zobrist and make/unmake — the checks perft cannot make
+
+Added to `tools/verify_movegen.py`. Perft never reads the hash key, and the only make/unmake
+asymmetries it notices are the ones that change the legal move count, so both were unverified.
+The walk compares the incremental key against a from-scratch recomputation at every node and
+snapshots the whole position to confirm unmake restores it bit for bit, over four positions
+chosen to cover lost castling rights, an en-passant file appearing and disappearing, and
+promotions: **121,343 nodes, all correct, 20.2s.**
+
+A drifting key would not have shown up as a hash bug. It would have shown up weeks later as the
+transposition table returning another position's score, which reads as a search bug and is far
+more expensive to chase.

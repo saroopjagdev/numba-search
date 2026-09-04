@@ -139,10 +139,10 @@ def load_backend(name: str) -> MoveGen:
         return PythonChess()
     if name == "engine":
         try:
-            from engine.perft import EnginePerft  # type: ignore[import-not-found]
+            from engine.perft import EnginePerft
         except ImportError:
             sys.exit("engine backend unavailable — build engine/ first, or use --backend chess")
-        return EnginePerft()  # type: ignore[no-any-return]
+        return EnginePerft()
     sys.exit(f"unknown backend {name!r}")
 
 

@@ -17,6 +17,10 @@ from engine.magics import BISHOP_BITS, BISHOP_MAGICS, ROOK_BITS, ROOK_MAGICS
 
 U64 = np.uint64
 
+# See engine/position.py: numba hands back np.int64 where Python would give an int, and those
+# values are exactly what gets passed straight back into these lookups.
+Int = int | np.int64
+
 ROOK_DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 BISHOP_DIRS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
 KNIGHT_DELTAS = ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2))
@@ -102,7 +106,7 @@ _DIR_ARRAYS = {
 
 
 @njit("uint64(int64, uint64, int64[:, :])", cache=False)
-def _ray_attacks(square: int, occupancy: U64, directions: np.ndarray) -> U64:
+def _ray_attacks(square: Int, occupancy: U64, directions: np.ndarray) -> U64:
     """Reference sliding attacks: walk each ray, stop on and include the first blocker."""
     attacks = U64(0)
     file = square & 7
@@ -166,14 +170,14 @@ _fill_table(
 
 
 @njit("uint64(int64, uint64)", cache=False)
-def rook_attacks(square: int, occupancy: U64) -> U64:
+def rook_attacks(square: Int, occupancy: U64) -> U64:
     blockers = occupancy & ROOK_MASKS[square]
     index = ROOK_OFFSETS[square] + np.int64((blockers * ROOK_MAGIC[square]) >> ROOK_SHIFTS[square])
     return U64(ROOK_TABLE[index])
 
 
 @njit("uint64(int64, uint64)", cache=False)
-def bishop_attacks(square: int, occupancy: U64) -> U64:
+def bishop_attacks(square: Int, occupancy: U64) -> U64:
     blockers = occupancy & BISHOP_MASKS[square]
     index = BISHOP_OFFSETS[square] + np.int64(
         (blockers * BISHOP_MAGIC[square]) >> BISHOP_SHIFTS[square]
@@ -182,20 +186,20 @@ def bishop_attacks(square: int, occupancy: U64) -> U64:
 
 
 @njit("uint64(int64, uint64)", cache=False)
-def queen_attacks(square: int, occupancy: U64) -> U64:
+def queen_attacks(square: Int, occupancy: U64) -> U64:
     return U64(rook_attacks(square, occupancy) | bishop_attacks(square, occupancy))
 
 
 @njit("uint64(int64)", cache=False)
-def knight_attacks(square: int) -> U64:
+def knight_attacks(square: Int) -> U64:
     return U64(KNIGHT_ATTACKS[square])
 
 
 @njit("uint64(int64)", cache=False)
-def king_attacks(square: int) -> U64:
+def king_attacks(square: Int) -> U64:
     return U64(KING_ATTACKS[square])
 
 
 @njit("uint64(int64, int64)", cache=False)
-def pawn_attacks(colour: int, square: int) -> U64:
+def pawn_attacks(colour: Int, square: Int) -> U64:
     return U64(PAWN_ATTACKS[colour, square])

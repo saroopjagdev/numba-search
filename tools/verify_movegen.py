@@ -10,6 +10,12 @@ Sliding attacks are the one part of movegen where a wrong answer is both easy to
 to notice — a bad magic collides on some rare occupancy and the engine plays an illegal move once
 every few thousand positions. So this checks *every* occupancy subset of *every* square, which is
 exhaustive over the space the tables can be asked about, not a sample of it.
+
+It also walks a small tree checking the incremental Zobrist key against a hash recomputed from
+scratch, and checking that unmake restores the position bit for bit. **Perft cannot catch either
+of these**: it never reads the key, and a make/unmake asymmetry that perft would notice is only
+the subset that changes the legal move count. A drifting key is invisible until the transposition
+table starts returning another position's score, which looks like a search bug, not a hash bug.
 """
 
 import sys
@@ -18,7 +24,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from engine import bitboard
+from engine import bitboard, position
 
 U64 = np.uint64
 
@@ -93,6 +99,67 @@ def check_leapers() -> int:
     return failures
 
 
+# Positions chosen so the walk exercises every part of make_move that touches the hash: castling
+# rights being lost, an en-passant file appearing and disappearing, and promotions.
+ZOBRIST_POSITIONS = (
+    ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+    ("kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
+    ("ep", "8/8/1k6/2b5/2pP4/8/5K2/8 b - d3 0 1"),
+    ("promotions", "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1"),
+)
+
+
+def check_zobrist(depth: int) -> int:
+    """Walk a tree verifying the incremental key and that unmake restores the position exactly."""
+    failures = 0
+    bb, mailbox, state, key = position.new_position()
+    undo, keys = position.new_undo()
+    buffer = np.zeros(position.MAX_MOVES * position.MAX_PLY, dtype=np.int32)
+    nodes = 0
+
+    def walk(remaining: int, ply: int) -> int:
+        nonlocal failures, nodes
+        if remaining == 0:
+            return 0
+        offset = ply * position.MAX_MOVES
+        count = position.generate_moves(bb, mailbox, state, buffer, offset)
+        side = int(state[position.STM])
+        for index in range(count):
+            move = buffer[offset + index]
+            before = (bb.copy(), mailbox.copy(), state.copy(), U64(key[0]))
+            position.make_move(bb, mailbox, state, key, undo, keys, ply, move)
+            king_square = position.lsb(bb[position.WK + 6 * side])
+            if not position.is_attacked(bb, king_square, 1 - side):
+                nodes += 1
+                expected = position.compute_key(bb, state)
+                if U64(key[0]) != expected:
+                    failures += 1
+                    if failures <= 5:
+                        uci = position.move_to_uci(move)
+                        print(f"  key drift after {uci}: 0x{int(key[0]):016X} != 0x{expected:016X}")
+                walk(remaining - 1, ply + 1)
+            position.unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
+            if (
+                not np.array_equal(bb, before[0])
+                or not np.array_equal(mailbox, before[1])
+                or not np.array_equal(state, before[2])
+                or U64(key[0]) != before[3]
+            ):
+                failures += 1
+                if failures <= 5:
+                    print(
+                        f"  unmake did not restore the position after {position.move_to_uci(move)}"
+                    )
+        return 0
+
+    for name, fen in ZOBRIST_POSITIONS:
+        position.set_fen(bb, mailbox, state, key, fen)
+        walk(depth, 0)
+        print(f"  {name:11} {'FAIL' if failures else 'ok'}")
+    print(f"  {'':11} {nodes:,} nodes checked")
+    return failures
+
+
 def main() -> None:
     print("verifying attack tables against a reference ray-walker\n")
     started = time.perf_counter()
@@ -115,10 +182,16 @@ def main() -> None:
             failures += 1
     print(f"  queen   {2000:>9,} random occupancies  {'FAIL' if failures else 'ok'}")
 
+    # Depth 3, not more: the walk snapshots and compares the whole position at every node, so it
+    # runs at Python speed, and the point is coverage of move *kinds* -- which the four positions
+    # give -- rather than node count, which perft already provides by the hundred million.
+    print("\nverifying incremental Zobrist keys and make/unmake symmetry\n")
+    failures += check_zobrist(3)
+
     print(f"\n  {time.perf_counter() - started:.1f}s")
     if failures:
-        sys.exit(f"\n{failures} mismatch(es) — the attack tables are wrong, fix before movegen")
-    print("\nattack tables correct")
+        sys.exit(f"\n{failures} mismatch(es) — fix before trusting search results")
+    print("\nattack tables, Zobrist keys and make/unmake all correct")
 
 
 if __name__ == "__main__":
