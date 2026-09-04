@@ -198,3 +198,93 @@ promotions: **121,343 nodes, all correct, 20.2s.**
 A drifting key would not have shown up as a hash bug. It would have shown up weeks later as the
 transposition table returning another position's score, which reads as a search bug and is far
 more expensive to chase.
+
+---
+
+## 2026-09-04 — Phase 2: hand-crafted eval, search, and the first real agent
+
+`engine/eval.py` (PSQT + mobility + king safety + pawn structure, tapered over 24 phase units),
+`engine/search.py` (iterative deepening, Zobrist TT, quiescence, null move, LMR, futility,
+aspiration windows, killers, history) and `agent.py` wired to both.
+
+### Strength
+
+`tools/sprt.py --candidate . --baseline baselines/minimax --base-ms 8000 --increment-ms 100`:
+**ACCEPTED after 15 games, +15 =0 -0.** Elo bar is meaningless with zero losses; what the run
+establishes is that the baseline never once drew or won.
+
+Three games at the *real* 120s + 0.5s control through `harness/play.py`: won as white against
+minimax, as black against minimax, and as white against greedy — **all three by checkmate**, none
+by flag, adjudication or opponent failure.
+
+Win At Chess subset, 20 positions at a 1000 ms budget: **13–15 solved**, depth 10–20 in the
+non-mate positions, mate found instantly in five. The 13-to-15 spread is run-to-run variance at a
+fixed clock, not a change in the engine — do not read a two-position difference as a regression.
+
+### Init cost
+
+**~30–34s for `import agent`, which includes the deliberate warm-up search.** Against a 90s hard
+cap and the 60s working target this is comfortable but no longer trivial: Phase 1 alone was ~12s
+warm, so eval and search together cost ~20s of compilation. The NNUE will add more. Re-measure
+after every jitted function added, and if the cap is approached, cut features rather than margin.
+
+The warm-up runs on kiwipete, not the start position, and that is a deliberate choice: kiwipete has
+castling for both sides, en passant reachable, promotions one push away and enough material for the
+null-move and LMR branches to be taken, so a shallow search over it compiles the whole engine.
+Warming up from `startpos` would leave several branches to compile on move one, out of the clock.
+
+### Clock discipline
+
+The measurement that matters, because overrunning loses a game outright while under-spending costs
+a few centipawns. Ten positions × five budgets from 30 ms to 2000 ms:
+
+| budget | mean | max |
+|---|---|---|
+| 30ms | 0.75x | 1.03x |
+| 100ms | 0.84x | 1.28x |
+| 300ms | 0.74x | 1.16x |
+| 1000ms | 0.63x | 1.02x |
+| 2000ms | 0.58x | 1.14x |
+
+**Worst observed overrun 1.28x of the search's own budget.** `agent.py` then applies a 0.85 safety
+factor and caps any single move at 25% of the remaining clock, so the worst case is ~27% of
+remaining on one move. It cannot flag.
+
+Getting there took two fixes, both found by measuring rather than reasoning:
+
+1. **The aspiration re-search escaped the clock.** A depth was treated as one indivisible unit, but
+   a fail-low or fail-high starts a *new* jitted call, and the clock was read only before the
+   first. WAC.008 overran a 1000 ms budget by 69%. Every call now gets its own clock read.
+2. **The nps estimate divided one iteration's nodes by the whole search's elapsed time**, which
+   understates it by roughly the branching factor and starved every later budget. Now measured
+   per call.
+
+The node budget has two independent caps. The time-based one is `remaining x nps x 1.2`; the other
+is `6 x last_nodes`, which does not depend on nps at all. The second exists because the nps
+estimate can be wrong in the dangerous direction — a shallow TT-saturated call reports millions of
+nodes per second, and the next real iteration would then be handed a budget taking seconds to
+spend.
+
+### Two bugs worth remembering
+
+**A segfault, not an exception.** `TT_MASK` was a module constant baked in at compile time, so
+`new_tt(bits=16)` produced a table indexed to 22 bits. Inside nopython code that is not an
+IndexError, it is a silent out-of-bounds write and a hard crash. The mask now comes from
+`tt_key.shape[0]`. Anything indexing a numba array from a constant is the same trap.
+
+**Unbounded ply.** The check extension can lengthen a line indefinitely when checks keep coming,
+and every buffer is indexed by ply. Same failure mode: no bounds check, straight to a segfault.
+`MAX_SEARCH_PLY = 120` caps it, with headroom below `MAX_PLY` for the quiescence tail.
+
+### Repetition
+
+The search scans its own path *and* the game history, because `harness/play.py` calls
+`board.outcome(claim_draw=True)` — the referee claims threefold for us, so an engine blind to game
+history can shuffle a won game into a draw. The agent only ever observes positions where it is to
+move, which are exactly the ones at even offsets from the root, so the walk reaches into game
+history only at even plies.
+
+### Lichess evaluations database — download complete
+
+`C:\Users\ssjag\chessdata\lichess_db_eval.jsonl.zst`, **21,681,515,630 bytes**, matching the
+published size. 394,669,566 positions, CC0. The NNUE track is unblocked.
