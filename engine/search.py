@@ -18,6 +18,19 @@ the real time control is the decision, taken between iterations, of whether to s
 
 Scores are centipawns from the side to move. Mate scores are `MATE - ply`, so a shorter mate beats
 a longer one and the search prefers to deliver mate rather than merely keep it available.
+
+Two evaluations, chosen at run time
+-----------------------------------
+`use_nnue` selects the network over the hand-crafted evaluation. It is a parameter rather than a
+compile-time constant on purpose: the whole question of whether the net is worth its cost is an
+SPRT question, and a runtime flag lets one binary play both sides of that match. Both functions
+return int32 centipawns relative to the side to move, so the call sites differ only in the branch.
+
+When the net is on, the accumulator travels with the search on a per-ply stack. Every `make_move`
+that survives the legality check is followed by a `push`, and `unmake_move` needs no counterpart
+because the parent ply's accumulator was never written. The pairing is load-bearing and unchecked
+at run time: a `make_move` without its `push` leaves every evaluation below it scoring a position
+the search is not in.
 """
 
 import time
@@ -26,6 +39,7 @@ import numpy as np
 from numba import njit
 
 from engine.eval import evaluate
+from engine.nnue import Network, evaluate_at, new_stack, push, push_null, refresh
 from engine.position import (
     ALL_OCC,
     CAPTURE_BIT,
@@ -225,7 +239,8 @@ def _is_repetition(
 
 @njit(
     "int32(uint64[:], int8[:], int64[:], uint64[:], int64[:, :], uint64[:], int32[:], int32[:],"
-    " int64, int64, int32, int32, int64[:])",
+    " int16[:, :, :], int16[:, :], int16[:, :], int32[:],"
+    " int64, int64, int32, int32, boolean, int64[:])",
     cache=False,
 )
 def quiescence(
@@ -237,10 +252,15 @@ def quiescence(
     keys: np.ndarray,
     moves: np.ndarray,
     scores: np.ndarray,
+    acc: np.ndarray,
+    transformer: np.ndarray,
+    output: np.ndarray,
+    output_bias: np.ndarray,
     ply: Int,
     depth: Int,
     alpha: np.int32,
     beta: np.int32,
+    use_nnue: bool,
     control: np.ndarray,
 ) -> np.int32:
     """Search only captures and promotions until the position is quiet.
@@ -254,7 +274,10 @@ def quiescence(
         control[2] = 1
         return I32(0)
 
-    stand_pat = evaluate(bb, mailbox, state)
+    if use_nnue:
+        stand_pat = evaluate_at(acc, output, output_bias, mailbox, ply, state[STM])
+    else:
+        stand_pat = evaluate(bb, mailbox, state)
     if ply >= MAX_SEARCH_PLY:
         return stand_pat
     if stand_pat >= beta:
@@ -299,21 +322,17 @@ def quiescence(
         if is_attacked(bb, king_square, 1 - side):
             unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
             continue
+        # After the legality check, not before: an illegal move is about to be taken back, and
+        # pushing the accumulator for it would be the most expensive part of discovering that.
+        if use_nnue:
+            push(acc, transformer, mailbox, ply, move, undo[ply, 0], side)
+        # fmt: off
         score = -quiescence(
-            bb,
-            mailbox,
-            state,
-            key,
-            undo,
-            keys,
-            moves,
-            scores,
-            ply + 1,
-            depth - 1,
-            -beta,
-            -alpha,
-            control,
+            bb, mailbox, state, key, undo, keys, moves, scores,
+            acc, transformer, output, output_bias,
+            ply + 1, depth - 1, -beta, -alpha, use_nnue, control,
         )
+        # fmt: on
         unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
 
         if control[2]:
@@ -329,8 +348,9 @@ def quiescence(
 
 @njit(
     "int32(uint64[:], int8[:], int64[:], uint64[:], int64[:, :], uint64[:], int32[:], int32[:],"
+    " int16[:, :, :], int16[:, :], int16[:, :], int32[:],"
     " uint64[:], int32[:], int32[:], int16[:], int8[:], int32[:, :], int32[:, :], uint64[:],"
-    " uint64[:], int64, int64, int64, int32, int32, boolean, int64[:])",
+    " uint64[:], int64, int64, int64, int32, int32, boolean, boolean, int64[:])",
     cache=False,
 )
 def negamax(
@@ -342,6 +362,10 @@ def negamax(
     keys: np.ndarray,
     moves: np.ndarray,
     scores: np.ndarray,
+    acc: np.ndarray,
+    transformer: np.ndarray,
+    output: np.ndarray,
+    output_bias: np.ndarray,
     tt_key: np.ndarray,
     tt_move: np.ndarray,
     tt_score: np.ndarray,
@@ -357,6 +381,7 @@ def negamax(
     alpha: np.int32,
     beta: np.int32,
     allow_null: bool,
+    use_nnue: bool,
     control: np.ndarray,
 ) -> np.int32:
     control[0] += 1
@@ -365,6 +390,8 @@ def negamax(
         return I32(0)
 
     if ply >= MAX_SEARCH_PLY:
+        if use_nnue:
+            return evaluate_at(acc, output, output_bias, mailbox, ply, state[STM])
         return evaluate(bb, mailbox, state)
 
     root = ply == 0
@@ -388,9 +415,13 @@ def negamax(
         depth += 1  # check extension: forced lines are cheap and easy to get wrong shallow
 
     if depth <= 0:
+        # fmt: off
         return quiescence(
-            bb, mailbox, state, key, undo, keys, moves, scores, ply, 0, alpha, beta, control
+            bb, mailbox, state, key, undo, keys, moves, scores,
+            acc, transformer, output, output_bias,
+            ply, 0, alpha, beta, use_nnue, control,
         )
+        # fmt: on
 
     # The mask comes from the array, not from a module constant. A constant would be baked in at
     # compile time, and a table allocated at any other size would then be indexed past its end --
@@ -415,7 +446,10 @@ def negamax(
             if stored_bound == UPPER and stored <= alpha:
                 return stored
 
-    static = evaluate(bb, mailbox, state)
+    if use_nnue:
+        static = evaluate_at(acc, output, output_bias, mailbox, ply, side)
+    else:
+        static = evaluate(bb, mailbox, state)
 
     # Reverse futility: far enough above beta that giving away a piece would still cut. Only when
     # not in check and not in a mate-scored window, where the margin means nothing.
@@ -443,15 +477,18 @@ def negamax(
         key[0] = key[0] ^ SIDE_KEY
         if saved_ep >= 0:
             key[0] = key[0] ^ EP_FILE_KEYS[saved_ep & 7]
+        if use_nnue:
+            push_null(acc, ply)
         # fmt: off
-        # Numba wants every array as its own argument, so the recursive calls run to 22 of them.
+        # Numba wants every array as its own argument, so the recursive calls run to 27 of them.
         # The formatter would put each on its own line, turning five call sites into a hundred
         # lines in which the only thing that varies -- ply, depth, window -- is invisible.
         score = -negamax(
-            bb, mailbox, state, key, undo, keys, moves, scores, tt_key, tt_move, tt_score,
+            bb, mailbox, state, key, undo, keys, moves, scores,
+            acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
             tt_depth, tt_bound, killers, history, path,
             game_keys, game_count, ply + 1, depth - 1 - reduction,
-            -beta, -beta + I32(1), False, control,
+            -beta, -beta + I32(1), False, use_nnue, control,
         )
         # fmt: on
         state[STM] = side
@@ -497,6 +534,8 @@ def negamax(
             unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
             continue
         legal += 1
+        if use_nnue:
+            push(acc, transformer, mailbox, ply, move, undo[ply, 0], side)
 
         # Late move reductions. Moves ordered this far down are rarely best, so search them
         # shallower first and only re-search at full depth if one surprises us.
@@ -511,33 +550,37 @@ def negamax(
         # fmt: off
         if legal == 1:
             score = -negamax(
-                bb, mailbox, state, key, undo, keys, moves, scores, tt_key, tt_move, tt_score,
+                bb, mailbox, state, key, undo, keys, moves, scores,
+                acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                 tt_depth, tt_bound, killers, history, path,
                 game_keys, game_count, ply + 1, depth - 1,
-                -beta, -alpha, True, control,
+                -beta, -alpha, True, use_nnue, control,
             )
         else:
             # Zero-window probe, reduced. Two things can send us back for a full search: the probe
             # beating alpha despite the reduction, or it landing inside a real window at the root.
             score = -negamax(
-                bb, mailbox, state, key, undo, keys, moves, scores, tt_key, tt_move, tt_score,
+                bb, mailbox, state, key, undo, keys, moves, scores,
+                acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                 tt_depth, tt_bound, killers, history, path,
                 game_keys, game_count, ply + 1, depth - 1 - reduction,
-                -alpha - I32(1), -alpha, True, control,
+                -alpha - I32(1), -alpha, True, use_nnue, control,
             )
             if score > alpha and reduction > 0:
                 score = -negamax(
-                    bb, mailbox, state, key, undo, keys, moves, scores, tt_key, tt_move, tt_score,
+                    bb, mailbox, state, key, undo, keys, moves, scores,
+                    acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                     tt_depth, tt_bound, killers, history, path,
                     game_keys, game_count, ply + 1, depth - 1,
-                    -alpha - I32(1), -alpha, True, control,
+                    -alpha - I32(1), -alpha, True, use_nnue, control,
                 )
             if score > alpha and score < beta:
                 score = -negamax(
-                    bb, mailbox, state, key, undo, keys, moves, scores, tt_key, tt_move, tt_score,
+                    bb, mailbox, state, key, undo, keys, moves, scores,
+                    acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                     tt_depth, tt_bound, killers, history, path,
                     game_keys, game_count, ply + 1, depth - 1,
-                    -beta, -alpha, True, control,
+                    -beta, -alpha, True, use_nnue, control,
                 )
         # fmt: on
 
@@ -614,6 +657,16 @@ class Searcher:
         self.scores = np.zeros(MAX_MOVES * MAX_PLY, dtype=np.int32)
         self.tt = new_tt(tt_bits)
         self.killers, self.history, self.path, self.control = new_search_state()
+        # The presence of `weights/nnue.npz` *is* the decision to use the net. Nothing else gates
+        # it, because the gate happens earlier: the file only enters the repository once SPRT has
+        # said the net beats the hand-crafted evaluation, and until then `Network` hands back a
+        # zero net that would score every position as a draw. Defaulting to "on if available" and
+        # keeping the file out is safer than defaulting to "off" and forgetting to turn it on.
+        self.network = Network()
+        self.use_nnue = self.network.available
+        # One accumulator per ply, plus one: the deepest node still pushes a child before the ply
+        # cap turns it back.
+        self.acc = new_stack(self.network.hidden, MAX_PLY + 1)
         # Every position we have already been asked to move in, oldest first. Sized past the ply
         # cap so it cannot overflow in a legal game.
         self.game_keys = np.zeros(512, dtype=np.uint64)
@@ -655,11 +708,24 @@ class Searcher:
         # The last entry in game_keys is the root itself, and the search reaches the root through
         # `path`, so it is handed only the positions strictly before it.
         history_count = max(0, self.game_count - 1)
+        if self.use_nnue:
+            # Rebuilt every iteration rather than once per move. It costs ~20 us against an
+            # iteration measured in milliseconds, and it makes the root accumulator unconditionally
+            # correct -- including after an aborted iteration, which is the case where reasoning
+            # about whether the stack unwound cleanly would be doing real work for no gain.
+            refresh(
+                self.mailbox,
+                self.network.transformer,
+                self.network.transformer_bias,
+                self.acc[0],
+            )
         # fmt: off
         score = negamax(
             self.bb, self.mailbox, self.state, self.key, self.undo, self.keys, self.moves,
-            self.scores, *self.tt, self.killers, self.history, self.path,
-            self.game_keys, history_count, 0, depth, I32(alpha), I32(beta), True, self.control,
+            self.scores, self.acc, self.network.transformer, self.network.output,
+            self.network.output_bias, *self.tt, self.killers, self.history, self.path,
+            self.game_keys, history_count, 0, depth, I32(alpha), I32(beta), True,
+            self.use_nnue, self.control,
         )
         # fmt: on
         return int(score), int(self.control[3]), int(self.control[0])

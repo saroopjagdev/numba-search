@@ -41,6 +41,7 @@ from pathlib import Path
 import numpy as np
 from numba import njit
 
+I32 = np.int32
 I64 = np.int64
 Int = int | np.int64
 
@@ -241,6 +242,75 @@ def forward(
     return (total * SCALE) // (QA * QB)
 
 
+@njit("void(int16[:, :, :], int16[:, :], int8[:], int64, int32, int64, int64)", cache=False)
+def push(
+    stack: np.ndarray,
+    transformer: np.ndarray,
+    mailbox: np.ndarray,
+    ply: Int,
+    move: np.int32,
+    captured: Int,
+    side: Int,
+) -> None:
+    """Carry the accumulator from `ply` to `ply + 1` across `move`. Call *after* `make_move`.
+
+    A stack rather than one accumulator updated in place, because that makes unmake free: the
+    parent's rows were never touched, so there is nothing to undo and nothing that can drift out of
+    step with the board over a million-node search. It is also the cheaper of the two: copying
+    `2 * hidden` int16 is a straight-line memcpy the vectoriser handles, where undoing on the way
+    out would mean a second round of scattered row arithmetic, and there are more of those per move
+    than there are elements in the copy.
+    """
+    parent = stack[ply]
+    child = stack[ply + 1]
+    hidden = stack.shape[2]
+    for colour in range(2):
+        for index in range(hidden):
+            child[colour, index] = parent[colour, index]
+    update(child, transformer, mailbox, move, captured, side)
+
+
+@njit("void(int16[:, :, :], int64)", cache=False)
+def push_null(stack: np.ndarray, ply: Int) -> None:
+    """The null-move case: no piece moves, so the child accumulator is the parent unchanged.
+
+    Only the side to move flips, and that is not held in the accumulator at all -- `forward` picks
+    the perspective by argument. So this really is just the copy.
+    """
+    parent = stack[ply]
+    child = stack[ply + 1]
+    hidden = stack.shape[2]
+    for colour in range(2):
+        for index in range(hidden):
+            child[colour, index] = parent[colour, index]
+
+
+@njit("int32(int16[:, :, :], int16[:, :], int32[:], int8[:], int64, int64)", cache=False)
+def evaluate_at(
+    stack: np.ndarray,
+    output: np.ndarray,
+    output_bias: np.ndarray,
+    mailbox: np.ndarray,
+    ply: Int,
+    stm: Int,
+) -> np.int32:
+    """Score the position the search is standing on. The search's entry point to the net.
+
+    Returns int32 to match the hand-crafted evaluation exactly, so the two are interchangeable at a
+    call site and the A/B costs nothing but a branch.
+    """
+    return I32(forward(stack[ply], output, output_bias, stm, bucket_of(mailbox)))
+
+
+def new_stack(hidden: int, plies: int) -> np.ndarray:
+    """One accumulator per ply, allocated once. Sized by the caller, whose ply cap this must cover.
+
+    Nothing in nopython code bounds-checks, so a stack shorter than the deepest line the search can
+    reach is a segfault rather than an IndexError.
+    """
+    return np.zeros((plies, 2, hidden), dtype=np.int16)
+
+
 @njit(
     "int64(int8[:], int64, int16[:, :], int16[:], int16[:, :], int32[:], int16[:, :])", cache=False
 )
@@ -337,3 +407,7 @@ def warm() -> None:
     )
     forward(network.scratch, network.output, network.output_bias, I64(0), I64(0))
     bucket_of(mailbox)
+    stack = new_stack(network.hidden, 3)
+    push(stack, network.transformer, mailbox, I64(0), np.int32(4 | (12 << 6)), I64(EMPTY), I64(0))
+    push_null(stack, I64(0))
+    evaluate_at(stack, network.output, network.output_bias, mailbox, I64(0), I64(0))

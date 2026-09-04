@@ -22,7 +22,7 @@ import argparse
 import chess
 import numpy as np
 
-from engine.nnue import EMPTY, apply_feature, refresh, update
+from engine.nnue import EMPTY, apply_feature, new_stack, push, push_null, refresh, update
 from engine.position import (
     CASTLE_KING,
     CASTLE_QUEEN,
@@ -157,6 +157,86 @@ def sweep(transformer: np.ndarray, bias: np.ndarray, hidden: int) -> tuple[int, 
     return checked, seen
 
 
+def tree(transformer: np.ndarray, bias: np.ndarray, hidden: int, depth: int) -> int:
+    """Walk a real search tree on a per-ply stack, the way `engine.search` does.
+
+    The two checks above prove `update` moves an accumulator correctly across one move. That is not
+    the same claim as the search needs, which is about the *stack*: that `push` writes only the
+    child ply, that the parent's accumulator is therefore still valid after `unmake_move` with no
+    undo step at all, and that a null move's copy leaves the position's own view unchanged.
+
+    So this recurses over every legal move to `depth`, and at every node asserts that `stack[ply]`
+    equals a refresh of the board actually on the table. It then re-checks the parent on the way
+    out, which is the assertion that makes unmake being a no-op safe rather than merely plausible.
+    Null moves are exercised at alternate plies for the same reason the sweep exists: the branch
+    that is never taken is the branch that is wrong.
+    """
+    stack = new_stack(hidden, depth + 2)
+    expected = np.zeros((2, hidden), dtype=np.int16)
+    buffer = np.zeros(MAX_MOVES * (depth + 2), dtype=np.int32)
+    visited = 0
+
+    def descend(
+        bb: np.ndarray,
+        mailbox: np.ndarray,
+        state: np.ndarray,
+        key: np.ndarray,
+        undo: np.ndarray,
+        keys: np.ndarray,
+        ply: int,
+        remaining: int,
+    ) -> bool:
+        nonlocal visited
+        visited += 1
+        refresh(mailbox, transformer, bias, expected)
+        if not np.array_equal(stack[ply], expected):
+            print(f"TREE MISMATCH at ply {ply}: {describe(mailbox)}")
+            return False
+        if remaining == 0:
+            return True
+
+        # A null move changes nothing on the board, so the child's accumulator must equal the
+        # parent's and a refresh of the unchanged board must equal both.
+        if ply % 2 == 0:
+            push_null(stack, ply)
+            if not np.array_equal(stack[ply + 1], expected):
+                print(f"NULL MISMATCH at ply {ply}")
+                return False
+
+        offset = ply * MAX_MOVES
+        count = generate_moves(bb, mailbox, state, buffer, offset)
+        side = int(state[STM_SLOT])
+        for index in range(count):
+            move = buffer[offset + index]
+            make_move(bb, mailbox, state, key, undo, keys, ply, move)
+            if is_attacked(bb, lsb(bb[WK + 6 * side]), 1 - side):
+                unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
+                continue
+            push(stack, transformer, mailbox, ply, move, int(undo[ply, 0]), side)
+            deeper = descend(bb, mailbox, state, key, undo, keys, ply + 1, remaining - 1)
+            unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
+            if not deeper:
+                return False
+            # The parent, after unmake and after the child wrote all over ply + 1.
+            refresh(mailbox, transformer, bias, expected)
+            if not np.array_equal(stack[ply], expected):
+                origin = square_name(int(move) & 63)
+                target = square_name((int(move) >> 6) & 63)
+                print(f"PARENT CLOBBERED at ply {ply} returning from {origin}->{target}")
+                return False
+        return True
+
+    for fen in SWEEP[:4]:
+        bb, mailbox, state, key = new_position()
+        undo, keys = new_undo()
+        set_fen(bb, mailbox, state, key, fen)
+        refresh(mailbox, transformer, bias, stack[0])
+        if not descend(bb, mailbox, state, key, undo, keys, 0, depth):
+            print(f"  from {fen}")
+            return -1
+    return visited
+
+
 def check_starts() -> None:
     """Refuse to run from a position where the side not to move is already in check.
 
@@ -174,7 +254,7 @@ def check_starts() -> None:
             raise SystemExit(f"illegal start position, side not to move is in check: {fen}")
 
 
-def run(games: int, plies: int, hidden: int, seed: int) -> int:
+def run(games: int, plies: int, hidden: int, seed: int, depth: int) -> int:
     check_starts()
     transformer, bias = random_weights(hidden, seed)
     rng = np.random.default_rng(seed)
@@ -252,8 +332,13 @@ def run(games: int, plies: int, hidden: int, seed: int) -> int:
     for flag_name, number in sweep_seen.items():
         seen[flag_name] += number
 
+    visited = tree(transformer, bias, hidden, depth)
+    if visited < 0:
+        return 1
+
     counts = "  ".join(f"{flag_name} {number:,}" for flag_name, number in seen.items())
     print(f"{checked:,} random-game positions and {swept:,} exhaustive moves checked")
+    print(f"{visited:,} search-tree nodes checked on the per-ply stack, depth {depth}")
     print("incremental == refresh exactly, on both make and unmake")
     print(f"exercised: {counts}")
     for flag_name, number in seen.items():
@@ -299,8 +384,17 @@ def main() -> None:
     parser.add_argument("--plies", type=int, default=180)
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--depth", type=int, default=3)
     arguments = parser.parse_args()
-    raise SystemExit(run(arguments.games, arguments.plies, arguments.hidden, arguments.seed))
+    raise SystemExit(
+        run(
+            arguments.games,
+            arguments.plies,
+            arguments.hidden,
+            arguments.seed,
+            arguments.depth,
+        )
+    )
 
 
 if __name__ == "__main__":
