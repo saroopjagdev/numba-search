@@ -347,3 +347,68 @@ Replay of round 12 with the fix, over the eight affected moves:
 Clock discipline over the ten-position, five-budget sweep **improved**: worst overrun 1.28x →
 1.20x. The retry can only fire when a call finished inside a quarter of the time left, so it is
 never the call that overruns.
+
+## Phase 3, part one: the training data (4 Sep)
+
+### Three facts about the source, all established by measurement
+
+Each of these is silent if wrong, which is why none was taken on trust.
+
+**`cp` is white-relative, not side-to-move.** Multi-PV lines are ordered best-first for the side to
+move, so white-relative scores must run ascending when black is to move. Over 200,000 sampled
+records: black to move **86,599 ascending against 3 descending**, white to move 92,350 descending
+against 3. Confirmed independently against material balance — the sign of the score agrees with
+the sign of material in **74.6%** of positions where both are non-zero, where the wrong perspective
+would have put that near 25%.
+
+**`depth >= 20` keeps 91.3%** of positions, so ~360M survive rather than the 300M assumed.
+
+**The database contains illegal positions.** Lichess evaluates boards its users set up by hand;
+record 7,106 has seventeen black pieces and three black knights. A plausibility filter (one king
+each, ≤16 pieces and ≤8 pawns a side, no pawns on the back ranks) rejects them. Overall ~87% of
+input records survive both filters.
+
+### The data is skewed toward white, and the architecture is the fix
+
+Mean score is **+210 cp** white-relative, and it is not an artefact — the material distribution is
+itself lopsided (+5 pawns or more in 10.2% of positions against −5 or worse in 3.8%). Feeding that
+to a net with white-relative targets would teach it the skew as a standing bias.
+
+It is handled for free by the architecture rather than by resampling. The net is fed
+`[side-to-move accumulator, other accumulator]` over the same 768 inputs, so a position and its
+colour-mirror produce identical activations and a colour bias is not representable. That only holds
+if the target is side-to-move relative too, so the score is stored white-relative on disk (the raw
+fact) and negated at load time. Per-side means are +254.9 with white to move and +163.1 with black,
+so the residual after conversion is about +50 cp — roughly the real first-move advantage.
+
+### Throughput: zstd is the bottleneck, and nothing we write will change that
+
+| | |
+|---|---|
+| raw disk read | 379 MB/s |
+| zstd decompress, one core | **32 MB/s** |
+| decompress + line split + parse, 6 workers | ~50,000 records/s |
+
+Decompression is CPU-bound at an eighth of what the disk delivers, so it is a hard serial floor;
+the parse was pushed to a worker pool and overlapped with it instead of being optimised. A full
+pass is ~2.2 hours and yields ~11 GB of 32-byte records across 64 shards.
+
+The first attempt managed 10,108 records/s, which would have been eleven hours. Profiling rather
+than guessing found the reason: it was neither the JSON nor the FEN parsing but the decompressor
+itself, which no amount of tuning on our side addresses.
+
+### Quantisation is validated, not assumed
+
+`QA = 255`, `QB = 64`, `eval_cp = (sum(screlu * w) / QA + bias * QA * QB) * SCALE / (QA * QB)`.
+On 8,192 held-out positions, float model against a from-scratch integer implementation:
+
+| | |
+|---|---|
+| fitted `int = a * float + b` | **a = 0.9988** |
+| corr(abs eval, abs error) | **−0.13** |
+| worst / mean divergence | 34.0 cp / 6.8 cp, against eval sd 466 cp |
+
+Both diagnostics say rounding noise rather than a scale bug: a wrong scale is multiplicative, so it
+moves the slope off 1.0 and drives the error correlation toward +1. Here the error is *larger* for
+small evaluations, which is the signature of additive noise. This is the check the plan named as
+the weakest-verification path in the project, so it runs at every checkpoint, not once.

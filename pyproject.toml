@@ -34,11 +34,18 @@ ignore = ["N818"]
 
 [tool.mypy]
 strict = true
-files = ["agent.py", "harness", "engine", "tools"]
+files = ["agent.py", "harness", "engine", "tools", "training"]
 
 # numba's decorators erase signatures, so jitted call sites and the tables they read come back
 # as Any. Silencing the module wholesale would hide real errors in the plain-Python parts, so
 # only the specific consequences of that erasure are allowed.
 [[tool.mypy.overrides]]
 module = ["numba.*"]
+ignore_missing_imports = true
+
+# Offline training dependencies. None of these ship, and none are installed in the match
+# container -- they exist only in the local venv, added with `uv pip install`, deliberately not as
+# project dependencies so that nothing in `engine/` can ever import one by accident.
+[[tool.mypy.overrides]]
+module = ["zstandard.*", "orjson.*"]
 ignore_missing_imports = true
