@@ -492,3 +492,87 @@ whether the *mover's* king is safe, so white's first move captured the king and 
 was nonsense. The failure report -- a move from an empty square, a white rook where the black king
 had been -- read exactly like an accumulator bug. `check_starts()` now rejects any position where
 the side not to move is in check, and caught a third bad position on the next run.
+
+
+## Phase 3, part three: the net inside the search (4 Sep, still contended)
+
+`engine/search.py` now carries the accumulator. `use_nnue` is a runtime parameter on `negamax` and
+`quiescence`, not a compile-time constant, so one binary plays both sides of the SPRT.
+
+### The stack, and why unmake costs nothing
+
+One accumulator per ply. `push` copies the parent's `2 x hidden` int16 and applies the move's four
+row updates into the child, so `unmake_move` has no accumulator counterpart at all. Two reasons,
+one of them measured and one structural:
+
+- Cheaper. The copy is 512 int16 of straight-line memcpy; undoing in place would instead be a
+  second round of scattered row arithmetic, and a quiet move already touches 1,024 elements that
+  way. 1,536 element-operations against 2,048, and the copy is the half that vectorises.
+- It cannot drift. Nothing accumulates across a million-node search, because the parent's rows are
+  never written in the first place.
+
+`push` runs *after* the legality check. An illegal move is about to be taken back and pushing for
+it would be the most expensive part of discovering that.
+
+### Gate: 100,512 search-tree nodes
+
+The earlier gates prove `update` moves one accumulator across one move. The search's claim is about
+the stack, which is a different statement, so `tools/verify_accumulator.py --depth 3` now walks
+every legal move to depth 3 from four positions and asserts at every node that `stack[ply]` equals
+a refresh of the board actually on the table -- then re-asserts the parent on the way out, which is
+what makes "unmake is a no-op" a checked fact rather than a plausible one. Null moves are pushed at
+alternate plies and checked the same way. **100,512 nodes, exact, plus the 2,400 random-game
+positions and 174 exhaustive moves from before.**
+
+### What the net costs, in plies
+
+Measured under preprocessing contention. Absolutes are ~3x pessimistic; the ratio is what counts.
+
+| position | HCE | NNUE |
+|---|---|---|
+| startpos, 2000 ms | depth 10, 212 knps | depth 10, 174 knps |
+| Kiwipete, 2000 ms | depth 9, 196 knps | depth 8, 130 knps |
+| a quiet middlegame, 2000 ms | depth 10, 206 knps | depth 9, 134 knps |
+
+**About a third of the nps and roughly one ply.** That is the price the evaluation has to beat, and
+one ply at depth 9 is not a small debt. SPRT decides; nothing here does.
+
+Sanity, on a deliberately undertrained 400-step net: legal moves everywhere, KPK solved to depth 17
+at +368, Kiwipete picking Bxa6. The evaluations are compressed (startpos and Kiwipete within 1 cp
+of each other) exactly as an undertrained net should be.
+
+### Init cost: an alarm that was contention, resolved on an idle machine
+
+`python -m harness.play --white . --black baselines/greedy` **lost on init** while preprocessing
+was running. Import-plus-warm-up measured **63.6 s** on the same contended machine against a 90 s
+budget -- so the harness run was somewhere past 90 s and the two numbers did not agree, which was
+the tell. Nothing measured against nine competing workers is worth acting on, so the budget was
+left alone until the box went quiet.
+
+Quiet, immediately after preprocessing finished:
+
+| | contended | quiet |
+|---|---|---|
+| `import engine.search` before this change | 93 s | 30-34 s (all week) |
+| `import engine.search` after | 135 s | **42.5 s** |
+| `import agent`, i.e. import + warm-up | 63.6 s | **38.1 s** |
+
+So threading the net through the search cost **about 8 s of compile**, and init sits near 40 s
+against a 60 s target, a 75 s cap and a 90 s budget -- with the platform historically running at
+roughly half local (16.2 s and 19.7 s against 30-34 s). The same harness game on the idle machine:
+**white by checkmate.**
+
+The lesson is the measurement discipline, not the number. The contended figures were not merely
+noisy, they were *differently ordered*: 63.6 s and "past 90 s" for the same quantity in the same
+minute. An engineer in a hurry reads the 135 s, concludes the NNUE blew the init budget, and spends
+the evening cutting a feature that was never over budget.
+
+## Training data: preprocessing complete (5 Sep, 00:00)
+
+**377,862,235 positions kept from ~401,300,000 read, 12.09 GB across 64 shards, 136 minutes.**
+354,243,379 of them are training records; four shards are held out for validation.
+
+Throughput matters for planning the run, and the contention factor shows up here too: **32,900
+positions/s quiet against 10,400 contended, a 3.2x factor** consistent with everything else
+measured tonight. At that rate the full 60,000 steps at batch 16,384 is 983M samples, ~2.8 epochs,
+and **~9 hours**. Checkpoints every 5,000 steps, so a crash at hour eight costs 40 minutes.
