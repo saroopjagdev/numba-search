@@ -83,7 +83,7 @@ def opening_fens() -> list[str]:
 
 
 def elo_to_score(elo: float) -> float:
-    return 1.0 / (1.0 + 10.0 ** (-elo / 400.0))
+    return float(1.0 / (1.0 + 10.0 ** (-elo / 400.0)))
 
 
 def score_to_elo(score: float) -> float:

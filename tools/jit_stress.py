@@ -197,8 +197,15 @@ def main() -> None:
         if depth >= 3 and beta < np.int32(30000):
             reduced = depth - 3
             score = -alphabeta(
-                pieces, side ^ 1, -beta, -beta + np.int32(1), reduced,
-                stack, history, tt_keys, ply + 1,
+                pieces,
+                side ^ 1,
+                -beta,
+                -beta + np.int32(1),
+                reduced,
+                stack,
+                history,
+                tt_keys,
+                ply + 1,
             )
             if score >= beta:
                 return beta
@@ -245,8 +252,15 @@ def main() -> None:
             if searched >= 3 and depth >= 3:
                 reduction = 1
             score = -alphabeta(
-                pieces, side ^ 1, -beta, -alpha, depth - 1 - reduction,
-                stack, history, tt_keys, ply + 1,
+                pieces,
+                side ^ 1,
+                -beta,
+                -alpha,
+                depth - 1 - reduction,
+                stack,
+                history,
+                tt_keys,
+                ply + 1,
             )
             if reduction > 0 and score > alpha:
                 score = -alphabeta(
