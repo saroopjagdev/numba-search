@@ -412,3 +412,83 @@ Both diagnostics say rounding noise rather than a scale bug: a wrong scale is mu
 moves the slope off 1.0 and drives the error correlation toward +1. Here the error is *larger* for
 small evaluations, which is the signature of additive noise. This is the check the plan named as
 the weakest-verification path in the project, so it runs at every checkpoint, not once.
+
+## Phase 3, part two: NNUE inference in the engine (4 Sep)
+
+`engine/nnue.py` -- the match-time half of the network -- plus `tools/verify_accumulator.py` as its
+gate. No trained net yet; every figure below is from full-range random int16 weights at the shipping
+width of 256, which is the correct instrument for testing arithmetic and speed.
+
+### The weight layout was wrong, and its own comment said so
+
+`quantise` stored the transformer as `[hidden, features]`, with a comment explaining that the
+transpose existed "so an incremental update touches one contiguous row of 256 int16 per changed
+feature". It does the exact opposite: in that layout a feature is a *column* on a 1536-byte stride,
+one cache line per element. Torch already stores `[features, hidden]`, which is what was wanted, so
+the fix was to delete the transpose. Worth recording because the comment was confidently right about
+the requirement and confidently wrong about whether the code met it.
+
+### Two independent integer implementations agree
+
+`engine/nnue.evaluate` and `training/train.integer_eval` were written separately from the same
+documented formula, and score the same positions within **0.775 cp worst case** -- the residual is
+the engine's integer division against the trainer's float division at the final step. This is the
+end-to-end version of the quantisation check: not just float-against-int, but the shipping code
+against the training code.
+
+### Colour symmetry holds exactly
+
+Over 399 positions, `|eval(position) - eval(mirror)| = 0 cp` in every case. The +210 cp skew in the
+data is structurally unrepresentable, as claimed, rather than merely unlikely.
+
+Peak accumulator magnitude measured at **1,730** against the int16 limit of 32,767, so the bound in
+the module docstring (+-16,160 worst case) is not close to being tested in practice.
+
+### Speed, and why the refresh is left slow
+
+All figures measured while the preprocessing pass was saturating nine cores, so the absolutes are
+pessimistic by roughly 3x; the ratios are what matter.
+
+| | us per call |
+|---|---|
+| hand-crafted evaluation | 1.72 |
+| NNUE full refresh | 16.1 |
+| NNUE forward pass | 2.9 |
+| NNUE incremental update | 2.0 |
+| **per node, incremental + forward** | **4.9** |
+
+16 us for 12,288 int16 additions is slow, and it is not memory pressure -- the same machine under
+the same load runs the hand-crafted evaluation in 1.7 us. The obvious fix, replacing the element
+loop with `accumulator += row`, was measured and is **worse**: 26.8 us, because numba materialises a
+temporary for the array expression. It is left alone because a full refresh happens once at the root
+and nowhere else; `update` touches four weight rows per move instead of forty-eight.
+
+So the shipped cost is ~4.9 us per node against the hand-crafted 1.7 us, inside the 3-8 us the plan
+budgeted, and roughly 200k evaluations/second. Whether that trade is positive is an SPRT question,
+not an arithmetic one.
+
+Marginal JIT cost of `engine/nnue.py`, measured after `engine.search` has already compiled: **6.2 s
+contended**, so ~2 s quiet locally and ~1 s on the container. (In the same contended run
+`engine.search` itself took 93 s against its usual 30-34 s. That is the 3x contention factor, not a
+regression, but init must be re-measured on an idle machine before the next upload.)
+
+### The accumulator gate, and the bug it found in itself
+
+`tools/verify_accumulator.py` plays random games and, after every move, compares the incrementally
+updated accumulator against a full refresh -- then unwinds and checks the restore. Exact integer
+equality, no tolerance. **22,306 random-game positions and 174 exhaustive moves, all exact.**
+
+Two things about it were worth the trouble:
+
+**Branch coverage is reported, and failure is on zero.** Random play from the opening produced four
+en passants in 22,000 positions, which is not coverage of the branch most likely to be wrong. Hence
+the exhaustive sweep: every legal move in eleven positions chosen to make the rare flags dense --
+en passant on three files for both colours, castling both ways, promotion with and without capture.
+Coverage went from `ep 2, castle 8` to `ep 12, castle 23, promotion 457`.
+
+**Two hand-written start positions were illegal.** `4k3/1P1P1P1P/.../4K3` puts white pawns on d7 and
+f7 both attacking the black king on e8. Generation is pseudo-legal and the legality filter only asks
+whether the *mover's* king is safe, so white's first move captured the king and every board after it
+was nonsense. The failure report -- a move from an empty square, a white rook where the black king
+had been -- read exactly like an accumulator bug. `check_starts()` now rejects any position where
+the side not to move is in check, and caught a third bad position on the next run.

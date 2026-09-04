@@ -131,9 +131,12 @@ def quantise(model: Nnue) -> dict[str, np.ndarray]:
     with torch.no_grad():
         transformer = model.transformer.weight.detach().cpu().numpy()
         return {
-            # Transposed to [hidden, features] so an incremental update touches one contiguous row
-            # of 256 int16 per changed feature.
-            "transformer": np.round(transformer * QA).astype(np.int16).T.copy(),
+            # Left as [features, hidden], which is what torch already stores, so that the row for
+            # one feature is 256 contiguous int16. That is the only layout the accumulator wants:
+            # a move changes a handful of features and each one is then a single 512-byte run the
+            # engine adds or subtracts. Transposing to [hidden, features] would put a feature on a
+            # 1536-byte stride and cost a cache line per element.
+            "transformer": np.round(transformer * QA).astype(np.int16),
             "transformer_bias": np.round(model.transformer_bias.detach().cpu().numpy() * QA).astype(
                 np.int16
             ),
@@ -159,7 +162,7 @@ def integer_eval(weights: dict[str, np.ndarray], batch: dict[str, np.ndarray]) -
     scales are right, and it is deliberately written from the documented formula rather than by
     reusing anything from `quantise`.
     """
-    transformer = weights["transformer"].astype(np.int32)  # [hidden, features]
+    transformer = weights["transformer"].astype(np.int32)  # [features, hidden]
     transformer_bias = weights["transformer_bias"].astype(np.int32)
     output = weights["output"].astype(np.int32)
     output_bias = weights["output_bias"].astype(np.int64)
@@ -171,8 +174,8 @@ def integer_eval(weights: dict[str, np.ndarray], batch: dict[str, np.ndarray]) -
 
     for position in range(count):
         start, end = int(offsets[position]), int(offsets[position + 1])
-        white_acc = transformer_bias + transformer[:, batch["white"][start:end]].sum(axis=1)
-        black_acc = transformer_bias + transformer[:, batch["black"][start:end]].sum(axis=1)
+        white_acc = transformer_bias + transformer[batch["white"][start:end]].sum(axis=0)
+        black_acc = transformer_bias + transformer[batch["black"][start:end]].sum(axis=0)
         if int(batch["stm"][position]) == 0:
             accumulator = np.concatenate([white_acc, black_acc])
         else:
