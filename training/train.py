@@ -230,8 +230,14 @@ def train(
     stream = ShardStream(shards, batch_size=batch_size, seed=1, holdout=holdout)
     validation = next(ShardStream(shards, batch_size=8192, seed=99, holdout=0).batches())
 
-    print(f"{stream.total_records:,} training records across {len(stream.shards)} shards")
-    print(f"hidden {hidden}, batch {batch_size}, {steps:,} steps on {device_name}")
+    # flush=True on every print in this file, not just the periodic ones. A run this long is
+    # watched through a redirected log, and Python block-buffers a pipe: without it the opening
+    # lines sit invisible for the first ten minutes and a run that died at startup is
+    # indistinguishable from one that is working.
+    print(
+        f"{stream.total_records:,} training records across {len(stream.shards)} shards", flush=True
+    )
+    print(f"hidden {hidden}, batch {batch_size}, {steps:,} steps on {device_name}", flush=True)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -278,10 +284,10 @@ def train(
             break
 
     worst, mean = validate_quantisation(model, validation, device)
-    print(f"final quantisation divergence: worst {worst:.1f} cp, mean {mean:.2f} cp")
+    print(f"final quantisation divergence: worst {worst:.1f} cp, mean {mean:.2f} cp", flush=True)
     save_weights(output, quantise(model))
     torch.save(model.state_dict(), output.with_suffix(".pt"))
-    print(f"wrote {output} ({output.stat().st_size / 1024:.0f} KB)")
+    print(f"wrote {output} ({output.stat().st_size / 1024:.0f} KB)", flush=True)
 
 
 def main() -> None:

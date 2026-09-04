@@ -129,3 +129,39 @@ This does not relax the discipline that produced the number: eager explicit sign
 jitted function, per-function compile timing re-measured after every change, no `parallel=True`.
 The documented failure mode is a *single* pathological function — forced inlining, an accidental
 second type specialisation — going from 30s to 100s on its own.
+
+---
+
+## 2026-09-04 — Training hardware: CPU only, so a run is an overnight job — MEASURED
+
+`torch.cuda.is_available()` is **False** and there is no NVIDIA device on the machine; the project
+venv is pinned to `torch 2.13.0+cpu`, which is the competition's own pin. Eight cores. Measured
+throughput is ~33k positions/s uncontended, so the default 60,000 steps at batch 16,384 is ~983M
+positions and **roughly eight hours**.
+
+Consequences, none of them optional:
+
+- **A training run is started at night and read in the morning.** There is no iterate-in-an-hour
+  loop available. Between 4 Sep and the 11 Sep deadline that allows a handful of runs, not dozens,
+  so the width A/B (128 / 256 / 512 / 1024) cannot be run exhaustively on this machine.
+- **Colab remains worth asking for.** It needs the user's Google account, so it is not automatable,
+  but a free T4 turns eight hours into two and is the only route to testing more than one width.
+  The laptop run is the fallback that always happens regardless.
+- **Training and SPRT contend.** Both saturate the CPU, and SPRT is timing-sensitive in a way
+  training is not. They are not run together; SPRT waits for a quiet machine.
+
+Contention is large enough to invalidate absolute timings taken during a run: with preprocessing on
+nine cores, `import engine.search` measured 93s against its usual 30-34s. Any init or nps figure
+taken while another job is running is worthless.
+
+## 2026-09-04 — Feature transformer ships as [features, hidden] — MEASURED
+
+The accumulator adds and subtracts one weight row per changed feature, so a feature must be a
+contiguous run. `quantise` had transposed to `[hidden, features]`, putting a feature on a
+`hidden * 2`-byte stride — one cache line per element — under a comment asserting the opposite.
+Torch's `EmbeddingBag` already stores `[features, hidden]`, so the correct code is less code.
+
+The general lesson is the one worth keeping: **the comment claimed a property the array did not
+have, and nothing tested the claim.** Layout assumptions are invisible to correctness tests — the
+transposed version computed identical evaluations, just slowly. It was caught by writing the engine
+side against the documented layout and finding the shapes disagreed.
