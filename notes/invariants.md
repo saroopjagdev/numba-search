@@ -37,6 +37,12 @@ The never-break list. If a change would violate one of these, the change is wron
 - **Test the extracted zip, not the working tree.** Unpack it somewhere clean and play a game from
   there. It is the only check that catches a missing file, because imports resolve fine from the
   repo no matter what the archive contains.
+- **A current, verified `submission.zip` always sits at the main repo root.** Uploads are manual,
+  on a human account, against a 10-per-day cap and a hard close — so the file that gets grabbed
+  must always be the current build. Work done in a worktree must copy its zip out to the root;
+  `submission.zip` is gitignored, so pushing does not cover this. This has already gone wrong
+  once: a 781-byte random-mover zip sat at the root looking current while the engine sat in a
+  worktree.
 
 ## Engineering
 
