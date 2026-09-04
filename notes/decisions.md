@@ -80,6 +80,41 @@ CC0 dumps strictly better.
 
 ---
 
+## 2026-09-04 — Testing strategy: relative SPRT locally, the dashboard ladder for absolute — LOCKED
+
+**Correction to an earlier claim in the plan: there is no CCRL involvement in this competition and
+there are no rated house bots.** Verified against the canonical rules page. Rated games and the
+final Swiss are played against *other teams' agents*; the only rating that exists is a Glicko-2
+ladder computed from those games. There is no external anchor to calibrate against.
+
+Two layers, neither needing an external ladder:
+
+1. **Local: relative SPRT against our own frozen previous builds** (`tools/sprt.py`). This drives
+   every development decision. "Did this change help?" needs no absolute anchor, and a paired A/B
+   over the same openings with colours reversed has far tighter error bars than any absolute
+   rating estimate. **Keep every shipped version permanently as a gauntlet opponent** — v1 HCE,
+   v2 NNUE, and so on. Real spacing, no cost, no rules ambiguity.
+2. **Absolute: the dashboard ladder.** Rated rounds run hourly, 08:00–22:00, from 4 Sep 08:00.
+   Actual hardware, actual 120s + 0.5s control, actual curated openings, actual field. Strictly
+   more informative than any CCRL proxy.
+
+**The bundled baselines are regression smoke tests, not rating anchors.** `greedy` is a 1-ply
+material search, `minimax` is 2-ply. After Phase 2 we beat them ~100%, and a 100% score carries no
+information — you cannot measure Elo above an opponent you never lose to. They remain useful only
+to answer "did I break something badly enough to lose to minimax?"
+
+**Rejected: a local Stockfish gauntlet as an absolute anchor.** It would be legal — the ban covers
+what ships in the zip, not the test rig — but CCRL and `UCI_Elo` figures are calibrated at long
+time controls on dedicated hardware and do not transfer to bullet on one shared core. Decisively,
+it changes no decision: we ship version N+1 if SPRT says it beats N, whether we are objectively at
+2200 or 2600. An afternoon of work for a number we would act on identically.
+
+**Consequence for uploads.** The ladder is not cosmetic. Qualification is the locked-build Swiss,
+but ladder rating **seeds** that Swiss, and seed order sets invite order for a 50-seat room. Every
+hour without a validated submission is free measurement against the real field, discarded.
+
+---
+
 ## 2026-09-04 — JIT budget is not the binding constraint — MEASURED
 
 Measured full-engine init projection ~9.7s, ~30s at a 3x margin, against a 60s target and 90s hard
