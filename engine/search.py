@@ -707,6 +707,8 @@ class Searcher:
             else:
                 alpha, beta = -INFINITY, INFINITY
 
+            # Multiplier on the branching-factor cap, reset at every depth. See the retry below.
+            scale = 1
             while True:
                 # Recomputed for every call, including each aspiration re-search. The margin is
                 # 1.2x rather than 3x: the node limit is what actually bounds the overrun, since
@@ -724,7 +726,7 @@ class Searcher:
                 budget = min(
                     node_limit,
                     int(remaining * self.nps * 1.2) + 5_000,
-                    6 * last_nodes + 50_000,
+                    scale * (6 * last_nodes + 50_000),
                 )
 
                 call_started = time.perf_counter()
@@ -739,6 +741,21 @@ class Searcher:
                     # budget large enough to blow the clock outright.
                     self.nps = min(5e6, max(5e4, 0.7 * self.nps + 0.3 * (nodes / call_elapsed)))
                 if self.control[2]:
+                    # Aborted -- but on nodes or on the clock? The branching-factor cap is sized
+                    # from the last completed call, and after the opponent plays the move we
+                    # predicted, the transposition table answers the early depths in a few hundred
+                    # nodes. The cap then sits near its 50k floor while the position itself needs
+                    # millions, so the first depth that has to do real work trips it. Treating that
+                    # as "time is up" ended the whole search and played a depth-12 move with three
+                    # and a half seconds still on the clock -- eight times in one rated game.
+                    #
+                    # So when the call died well inside the time left, it was the cap and not the
+                    # clock: widen it and search the same depth again. The clock read at the top of
+                    # this loop is what actually terminates us, and the quarter-of-remaining test
+                    # keeps a retry from being the call that overruns.
+                    if call_elapsed < 0.25 * remaining and scale < 4096:
+                        scale *= 4
+                        continue
                     break
                 if score <= alpha:
                     # Fail low: the position is worse than we thought. Widen downward and retry;

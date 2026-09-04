@@ -60,6 +60,11 @@ The never-break list. If a change would violate one of these, the change is wron
   uninterruptible breaks this.
 - **The node budget never depends on the nps estimate alone.** The second cap is a multiple of the
   last completed call's node count, which cannot be poisoned by an anomalous timing sample.
+- **Running out of nodes is not the same as running out of time.** A call that aborts having used a
+  small fraction of the time left hit the node cap, not the clock, and the correct response is to
+  widen the cap and search that depth again — not to end the search. Conflating the two shipped a
+  build that played eight moves a game in under 0.1 s each with seconds still on its clock, because
+  a transposition table warm from the previous move keeps the cap pinned at its floor.
 - **Spend at most ~85% of the theoretical budget, and at most 25% of the remaining clock on one
   move.** `harness/referee.py:67` starts the clock *before* the request is sent, so JSON encoding
   and the pipe round-trip come out of our time, and the 500 ms watchdog grace does not save us —

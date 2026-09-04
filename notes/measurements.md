@@ -288,3 +288,62 @@ history only at even plies.
 
 `C:\Users\ssjag\chessdata\lichess_db_eval.jsonl.zst`, **21,681,515,630 bytes**, matching the
 published size. 394,669,566 positions, CC0. The NNUE track is unblocked.
+
+## Rated rounds 12 and 13 (4 Sep) — first games played by the real engine
+
+Both won by checkmate. Round 12 as black vs "Minimax Three" from a Ruy Lopez Closed at move 10;
+round 13 as white vs "Chess" from a Caro-Kann Classical at move 6. Rounds 10 and 11 were losses,
+but those were played by the 781-byte random mover that was still the live build at the time.
+
+### Init on the platform is half what it is locally — the most useful number so far
+
+| | Ready in | Of the 90 s budget |
+|---|---|---|
+| Round 12, machine `w-75c226` | **16.2 s** | 18 % |
+| Round 13, machine `w-2b4afc` | **19.7 s** | 22 % |
+
+Local Windows measures 30–34 s for the same import. The container JITs roughly twice as fast, and
+the spread between the two machines is about 20 %. Against a 75 s working cap that leaves **~55 s
+of headroom**, so the NNUE's compile cost is not the constraint Phase 3 was budgeted around. Local
+timings stay what we gate on — they are the pessimistic number — but the cap is no longer close.
+
+### Clock
+
+Slowest moves were 3.9 s and 4.0 s against a predicted budget of 3.7 s at a 120 s clock: 1.08x
+including the harness round-trip, well inside the margin. Neither game came near a flag.
+
+### Start FENs are visible in the match log
+
+`Start FEN` appears in the header of both logs, at ply 19 and ply 11 of named opening lines. That
+resolves the precondition the shelved opening-book item was gated on. Still shelved — it competes
+with search work that has certain Elo and sits in a rules grey zone — but it is now known rather
+than assumed.
+
+### The bug the logs exposed: eight moves a game thrown away
+
+Round 12 used 24.7 s of 120 s over 22 moves, with eight moves returning in 0.0–0.1 s. Replaying the
+game locally reproduced it exactly, and the cause was not that those positions were easy.
+
+The node budget's second cap is `6 * last_nodes + 50_000`, sized from the last completed call so a
+wrong nps estimate cannot blow the clock. After the opponent plays the move we predicted, the
+transposition table answers the early depths in a few hundred nodes, so `last_nodes` stays near
+zero and the cap sits at its 50k floor while the position itself needs millions. The first depth
+that has to do real work trips the cap and sets the abort flag — and the driver treated any abort
+as "time is up" and ended the whole search. The result was a depth-12 move played with 3.5 s still
+on the clock.
+
+The fix distinguishes the two aborts: if the call died having used less than a quarter of the time
+remaining, it was the cap and not the clock, so the cap is multiplied by four and the same depth
+searched again. The clock read at the top of the loop is what actually terminates the search.
+
+Replay of round 12 with the fix, over the eight affected moves:
+
+| | before | after |
+|---|---|---|
+| time spent on those moves | 0.07–0.15 s | 1.95–4.14 s |
+| depth reached | 10–16 | 13–23 |
+| mate first seen | move 19 | **move 18**, at depth 23 |
+
+Clock discipline over the ten-position, five-budget sweep **improved**: worst overrun 1.28x →
+1.20x. The retry can only fire when a call finished inside a quarter of the time left, so it is
+never the call that overruns.
