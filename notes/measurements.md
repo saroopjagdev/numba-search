@@ -1135,3 +1135,35 @@ believed.
 
 Init headroom is therefore comfortable, not marginal: 31.7s of a 90s allowance, with `engine.search`
 at 66% of it as the thing to watch.
+
+## 5 Sep -- the net beats the hand-crafted eval, and the SPRT moves to CI
+
+`(768->256)x2->1` int16 net vs the identical build with `weights/` deleted, at 30s + 0.125s,
+200 games from the curated openings, 20 CI shards pooled by `tools/sprt_combine.py`.
+
+    INCONCLUSIVE  +119 =17 -64   LLR +2.61  in [-2.94, 2.94]
+    Elo +98.1 +- 48.1
+
+Formally short of the bound by 0.33, and practically decisive: the 95% interval is roughly
+[+50, +146] and does not come near zero. Phase 3's adoption gate was "beats the HCE build" and this
+clears it. **The net ships.**
+
+This is the cleanest A/B the codebase allows. `Network.available` is nothing but the weights file
+existing, so deleting `weights/` from a copy of the tree yields the hand-crafted-eval build of
+byte-identical code -- no flag, no branch, no second binary. The workflow's `diff -r` guard confirms
+the two trees actually differ before spending a runner-minute, so a silent no-op comparison cannot
+masquerade as a tidy inconclusive.
+
+**Throughput: ~4 minutes wall clock against the ~12 hours the local run was tracking.** Not because
+CI is faster -- games are clock-bound, so a quicker machine searches deeper in the same seconds
+rather than finishing sooner. The only lever is playing more at once, and 20 runners is 20x. The
+dev box is capped at one concurrent game by memory (two agent processes, ~340 MB each, under a
+gigabyte free), which is the whole reason the fan-out was worth building.
+
+**Batches do not pool, and this constrains how the instrument is used.** `sprt.py` derives its
+schedule from `--seed`, so a second run at seed 7 replays the same openings rather than adding new
+ones, while `sprt_combine.py`'s `MUST_MATCH` refuses to pool across different seeds -- correctly,
+since a different opening order is a different sample. So a follow-up batch is an *independent
+replication*, never extra sample size for the same test. Choose the game count up front. Chasing a
+formal ACCEPT here would have cost ~1000 further runner-minutes to move an LLR of 2.61 to 2.94 on a
+question whose direction is not in doubt.

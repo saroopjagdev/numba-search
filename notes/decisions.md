@@ -186,3 +186,31 @@ an opponent hammering memory, which penalises the 1.6 MB net far more than the 3
 This is decided on a proxy plus a speed measurement, not on games, because the SPRT is still blocked
 on memory. It is the strongest evidence obtainable on this machine. 128 is the named fallback if
 init-budget pressure later forces a cut. See `notes/measurements.md`, 5 Sep.
+
+## 2026-09-05 -- The NNUE build is the shipping build -- MEASURED
+
+**Decision: the net ships. The hand-crafted eval is demoted to fallback.**
+
+200 games at 30s + 0.125s against the byte-identical no-weights build: **+119 =17 -64, Elo
++98.1 +- 48.1**, LLR +2.61 against a +-2.94 bound. Formally inconclusive, practically settled -- a
+95% interval of roughly [+50, +146] does not admit a reading in which the net is not better. Phase 3
+made adoption conditional on beating HCE; that condition is met, and by a margin well beyond the
++15 Elo H1 the test was framed around.
+
+We are not paying for a formal ACCEPT. The batch cannot be extended -- see `notes/measurements.md`
+for why seeds make batches independent rather than cumulative -- so converting 2.61 into 2.94 means
+a fresh ~1000 runner-minutes, roughly the remaining monthly budget, to add a decimal to a conclusion
+that is not in question. That budget is better spent on the search-side changes that still have no
+verdict at all.
+
+Consequences:
+- HCE stays in the tree and stays correct. It is the fallback if the net ever fails validation on
+  the platform, and it is the reference the next net is measured against.
+- `weights/nnue.npz` is now load-bearing. Removing it silently downgrades the agent by ~100 Elo
+  rather than failing, which is exactly the failure mode packaging must not have -- keep asserting
+  `use_nnue True` from inside the extracted zip, never from the source tree.
+
+**Corollary decision: SPRT runs in CI from now on, not locally.** The dev box plays one game at a
+time and took ~12 hours for a verdict this run reached in ~4 minutes. Games are clock-bound, so
+parallelism is the only lever that exists. Local runs are for smoke tests; verdicts come from
+`.github/workflows/sprt.yml`.
