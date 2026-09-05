@@ -63,25 +63,34 @@ Trains `(768 -> 256) x 2 -> 1` SCReLU with 8 output buckets, then quantises to i
 `net256.npz` -- the file the engine loads. Nothing here ships; only the `.npz` does.
 
 **Before running:** set *Runtime -> Change runtime type -> T4 GPU*, and put the shard files in
-Google Drive under `MyDrive/chessathon/shards/`. Records were scattered across the 64 shards
-uniformly at random when they were written, so **any subset is already a uniform random sample** of
-the whole database and needs no reshuffling -- which is what makes uploading a subset legitimate
-rather than a compromise.
+Google Drive under `MyDrive/chessathon/shards/`.
 
-**Upload 32 of them: `shard00.bin` to `shard31.bin`, 6.05 GB, 189M positions.** The sizing is set
-by the width A/B, not by the 256-wide net:
+**Upload all 64: `shard00.bin` to `shard63.bin`, about 7.8 GB, ~244M positions.** They are written
+locally to `C:\\Users\\ssjag\\chessdata\\shards_quiet\\` -- note *shards_quiet*, not `shards`, which
+is the older unfiltered corpus kept only as a control.
 
-| shards | size | positions | epochs at 60k steps | positions/parameter, 256 | ditto, 1024 |
-|---|---|---|---|---|---|
-| 12 | 2.27 GB | 70.8M | 13.9 | 352 | 88 |
-| **32** | **6.05 GB** | **189M** | **5.2** | **940** | **235** |
-| 60 | 11.3 GB | 354M | 2.8 | 1763 | 441 |
+These are the *filtered* shards: positions in check, and positions whose best move is a capture or
+promotion,
+have been removed, because the net only ever scores the leaves of a search that has already
+resolved captures. That filter is what makes the whole corpus fit: 7.8 GB sits inside Drive's 15 GB
+free tier with room to spare, where the unfiltered 12.09 GB did not, and uploading a subset is no
+longer a trade worth making.
 
-The 256-wide net has ~201k parameters and would be fine on 12 shards. The 1024-wide variant has
-~804k, and at 12 shards it would see 88 positions per parameter against the 256-wide net's 352 --
-so a width comparison run on that data would be measuring which net is least starved rather than
-which architecture is better. 32 shards is the knee: half of Drive's 15 GB free tier, five clean
-epochs, and no width handicapped. Going to 48 or 60 buys little and risks filling the quota.
+`train.py --holdout 4` reserves `shard60`-`shard63` for validation, so 60 shards, ~229M positions,
+actually train:
+
+| | positions | epochs at 60k steps | positions/parameter, 256 | ditto, 1024 |
+|---|---|---|---|---|
+| 60 training shards | 229M | 4.3 | 1139 | 285 |
+
+The sizing is set by the width A/B rather than by the 256-wide net. The 256-wide net has ~201k
+parameters and is easy to feed; the 1024-wide variant has ~804k, and on a small corpus it would see
+so few positions per parameter that the comparison would measure which net is least starved rather
+than which architecture is better. At 285 positions/parameter no width is handicapped.
+
+Records were scattered across the 64 shards uniformly at random when they were written, so any
+subset is already a uniform random sample of the database and needs no reshuffling. That still
+holds -- it is simply no longer needed.
 
 The code below is generated from the repository by `tools/make_colab_notebook.py`. Do not edit it
 here -- edit the repository and regenerate, or the net you train stops matching the net the engine
