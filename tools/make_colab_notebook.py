@@ -142,8 +142,21 @@ shards = Path({DRIVE_SHARDS!r})
 nets = Path({DRIVE_NETS!r})
 nets.mkdir(parents=True, exist_ok=True)
 
+EXPECTED_SHARDS = 64
+
 files = sorted(shards.glob('shard*.bin'))
 assert files, f"no shard*.bin in {{shards}} -- upload some first"
+
+# Drive keeps syncing after the folder looks present. Runs have already started on 44, 55 and 60
+# of the 64 shards and finished without complaining, which is the worst kind of failure here: the
+# width A/B would have compared nets trained on different amounts of data and reported it as an
+# effect of width. Refuse to start rather than measure sync progress.
+assert len(files) == EXPECTED_SHARDS, (
+    f"{{len(files)}} of {{EXPECTED_SHARDS}} shards visible -- Drive is still syncing."
+    " Wait and re-run this cell; do not train on a partial corpus."
+)
+truncated = [path.name for path in files if path.stat().st_size % RECORD_SIZE]
+assert not truncated, f"partially synced shards: {{truncated}}"
 
 total = sum(path.stat().st_size for path in files)
 positions = total // RECORD_SIZE

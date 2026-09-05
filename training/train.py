@@ -250,7 +250,7 @@ def train(
     started = time.perf_counter()
     running = 0.0
     step = 0
-    for step, batch in enumerate(stream.batches(), start=1):
+    for step, batch in enumerate(stream.batches(repeat=True), start=1):
         tensors = to_tensors(batch, device)
         prediction = model(
             tensors["white"],
@@ -289,6 +289,16 @@ def train(
             print(f"  saved {output}", flush=True)
         if step >= steps:
             break
+
+    if step < steps:
+        # This exact thing happened once and cost a GPU session: the stream ran dry, the loop fell
+        # out silently, and the run printed "final" over a net the cosine schedule had annealed
+        # less than a quarter of the way. Nothing downstream can tell that net from a good one, so
+        # say it here rather than let it reach a measurement.
+        raise SystemExit(
+            f"the stream ended at step {step:,} of {steps:,}. The learning rate schedule anneals"
+            " over the requested steps, so this net was left mid-schedule and must not be used."
+        )
 
     worst, mean = validate_quantisation(model, validation, device)
     print(f"final quantisation divergence: worst {worst:.1f} cp, mean {mean:.2f} cp", flush=True)

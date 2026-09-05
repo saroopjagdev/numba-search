@@ -141,10 +141,25 @@ class ShardStream:
                     block = flat[: count * RECORD_SIZE].reshape(count, RECORD_SIZE)
                     yield block[self.rng.permutation(count)]
 
-    def batches(self) -> Iterator[dict[str, np.ndarray]]:
-        for block in self.blocks():
-            for start in range(0, len(block) - self.batch_size + 1, self.batch_size):
-                yield self._decode(block[start : start + self.batch_size])
+    def batches(self, repeat: bool = False) -> Iterator[dict[str, np.ndarray]]:
+        """Decoded batches. With `repeat`, never stops; otherwise exactly one pass over the data.
+
+        The default is one pass because two of the three callers want a bounded prefix and an
+        endless generator would be a trap for them. The training loop wants the opposite and must
+        ask: it is driven by a step count, and a stream that ends early does not shorten the run,
+        it strands it. `CosineAnnealingLR` anneals over the *requested* steps, so a run that
+        silently stopped at 13,600 of 60,000 finished at 88% of peak learning rate -- the net was
+        not merely undertrained, it was never annealed at all.
+
+        Each pass re-draws the shard order and the within-block permutation from `self.rng`, which
+        carries on rather than resetting, so successive epochs see different orderings.
+        """
+        while True:
+            for block in self.blocks():
+                for start in range(0, len(block) - self.batch_size + 1, self.batch_size):
+                    yield self._decode(block[start : start + self.batch_size])
+            if not repeat:
+                return
 
     def _decode(self, records: np.ndarray) -> dict[str, np.ndarray]:
         count = len(records)
