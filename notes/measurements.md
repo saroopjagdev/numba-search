@@ -1008,3 +1008,49 @@ called before every timed search.
 
 This closes the quantisation path before the net exists, which is the point of running it against
 a synthesised net rather than waiting for a trained one.
+
+## 5 Sep -- the four real nets, and the net beats the hand-crafted evaluation decisively
+
+First properly trained nets: 60,000 steps, batch 16,384, 3.86 epochs over the 254,934,114 quiet
+records in the 62 training shards, on a Colab T4 at 450-550k pos/s. Every earlier net was invalid
+(see the single-epoch bug, same date).
+
+`tools/verify_nnue.py`, 4,096 positions each, real weights rather than a synthesised net:
+
+    net128   0 bucket disagreements, mean 0.501 cp, worst 0.995   ACCEPTED
+    net256   0 bucket disagreements, mean 0.504 cp, worst 0.995   ACCEPTED
+    net512   0 bucket disagreements, mean 0.502 cp, worst 0.995   ACCEPTED
+    net1024  0 bucket disagreements, mean 0.494 cp, worst 0.995   ACCEPTED
+
+Same signature as the random-net run -- floor-versus-float and nothing else. The engine's integer
+inference is now verified against the trainer on the weights that would actually ship.
+
+Exported weight ranges confirm the accumulator bound the `engine/nnue.py` docstring asserts rather
+than leaving it theoretical. Peak transformer weight is 505 at QA=255, which is the +-1.98 clamp
+exactly, so the worst case is 32 pieces x 505 + 184 = 16,344 against int16's 32,767. Two times
+headroom, and **that closes the "should we raise QA" question in the negative** -- the binding
+constraint was never the weight, it is the accumulator sum, and there is not room to double it.
+
+`tools/eval_quality.py`, 8,192 positions from `shard62`/`shard63`, which `--holdout 2` reserved and
+no run has seen:
+
+    eval        MAE cp   RMSE cp   WDL MAE    corr     sign
+    hce          310.0     590.7    0.0970   0.704   78.2%
+    net128       250.7     513.1    0.0656   0.783   90.1%
+    net256       250.6     532.3    0.0630   0.777   90.7%
+    net512       261.6     594.5    0.0602   0.758   91.6%
+    net1024      283.1     732.5    0.0576   0.720   92.2%
+
+Read the WDL column, not the centipawn ones. WDL is the space the trainer optimised and the space
+that corresponds to games; centipawn error charges the same penalty for 900-versus-1200 as for
+0-versus-300, and the first is two ways of saying "winning". That is exactly why cp MAE and
+correlation get *worse* with width while WDL MAE and sign agreement get better: wider nets are more
+willing to commit to large scores, which costs cp error and gains decision quality.
+
+On the metric that matters the net roughly halves the hand-crafted evaluation's error, 0.0970 to
+0.0576, and takes sign agreement from 78.2% to 92.2%. This is the strongest evidence yet for the
+net, but it is **not** a strength result -- it says nothing about speed, and a better evaluation
+that searches shallower can still lose. The SPRT remains the gate.
+
+Width improves the trained objective monotonically and with no sign of saturation, so the choice
+is entirely a speed question.
