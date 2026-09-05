@@ -65,23 +65,28 @@ Trains `(768 -> 256) x 2 -> 1` SCReLU with 8 output buckets, then quantises to i
 **Before running:** set *Runtime -> Change runtime type -> T4 GPU*, and put the shard files in
 Google Drive under `MyDrive/chessathon/shards/`.
 
-**Upload all 64: `shard00.bin` to `shard63.bin`, about 7.8 GB, ~244M positions.** They are written
+**Upload all 64: `shard00.bin` to `shard63.bin`, 8.42 GB, 263,154,771 positions.** They are written
 locally to `C:\\Users\\ssjag\\chessdata\\shards_quiet\\` -- note *shards_quiet*, not `shards`, which
 is the older unfiltered corpus kept only as a control.
 
 These are the *filtered* shards: positions in check, and positions whose best move is a capture or
-promotion,
-have been removed, because the net only ever scores the leaves of a search that has already
-resolved captures. That filter is what makes the whole corpus fit: 7.8 GB sits inside Drive's 15 GB
-free tier with room to spare, where the unfiltered 12.09 GB did not, and uploading a subset is no
-longer a trade worth making.
+promotion, have been removed, because the net only ever scores the leaves of a search that has
+already resolved captures. That filter is what makes the whole corpus fit: 8.42 GB sits inside
+Drive's 15 GB free tier with room to spare, where the unfiltered 12.09 GB did not, and uploading a
+subset is no longer a trade worth making.
 
-`train.py --holdout 4` reserves `shard60`-`shard63` for validation, so 60 shards, ~229M positions,
+Filtering shifts the labels, and that is expected rather than a defect. Mean score for the side to
+move goes from +42.6 cp unfiltered to +75.3 cp filtered, standard deviation essentially unchanged
+at 789 cp: discarding positions whose best move is a capture discards the ones where the mover is
+about to win material back, and what is left is the quiet distribution the net is actually asked to
+score at search leaves.
+
+`train.py --holdout 2` reserves `shard62`-`shard63` for validation, so 62 shards, ~255M positions,
 actually train:
 
 | | positions | epochs at 60k steps | positions/parameter, 256 | ditto, 1024 |
 |---|---|---|---|---|
-| 60 training shards | 229M | 4.3 | 1139 | 285 |
+| 62 training shards | 255M | 3.9 | 1268 | 317 |
 
 The sizing is set by the width A/B rather than by the 256-wide net. The 256-wide net has ~201k
 parameters and is easy to feed; the 1024-wide variant has ~804k, and on a small corpus it would see
@@ -178,8 +183,8 @@ last checkpoint rather than the whole run.
 
 Leave `--steps 60000` alone whatever you uploaded. It is the total number of *samples* the
 optimiser sees that matters, and 60,000 x 16,384 = 983M is the schedule the cosine learning-rate
-decay is built around -- cutting it short leaves the run stranded at a high learning rate. On 32
-shards that is 5.2 epochs, which is a normal number of passes for a net this small.
+decay is built around -- cutting it short leaves the run stranded at a high learning rate. On the
+62 training shards that is 3.9 epochs, a normal number of passes for a net this small.
 """
             ),
             code(
