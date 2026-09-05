@@ -809,8 +809,25 @@ corpus is kept in `shards/` as the control arm for a filtered-versus-unfiltered 
 the reason `--no-quiet-filter` exists: the filter should have to win a match, not be taken on faith
 because three strong engines do it.
 
-One thing worth watching from the killed run: **loss sat at ~0.016 from step 6,000 to 11,600 with
-no visible improvement over 5,600 steps.** That is either early convergence, which would be
-surprising at a fifth of the schedule, or the loss being dominated by easy positions. If the
-filtered run shows the same plateau, the learning-rate schedule needs looking at before the width
-A/B, because a flat loss curve would make all four widths look identical.
+### The loss was not plateauing, which is worth writing down because it looked like it was
+
+Reading the tail of the log, the loss appeared stuck at ~0.016 for thousands of steps. Averaged
+over 2,000-step windows it is not stuck at all:
+
+| steps | mean loss | change |
+|---|---|---|
+| 0-2,000 | 0.02084 | -- |
+| 2,000-4,000 | 0.01766 | -15.3% |
+| 4,000-6,000 | 0.01705 | -3.5% |
+| 6,000-8,000 | 0.01654 | -3.0% |
+| 8,000-10,000 | 0.01624 | -1.8% |
+| 10,000-12,000 | 0.01607 | -1.0% |
+
+Monotonic throughout, decelerating normally. Per-batch noise is roughly +/-0.0005, which is larger
+than the improvement between adjacent 200-step prints, so eyeballing consecutive lines shows
+nothing and reads as a plateau. The schedule is `CosineAnnealingLR(T_max=60000)`, so at step 11,600
+the learning rate had only fallen about 4% -- essentially all of the decay-driven improvement was
+still ahead. Nothing to fix.
+
+The lesson is about the instrument rather than the net: **a 200-step print interval is below the
+noise floor of this loss.** Judge training curves from windowed means, not from the last few lines.
