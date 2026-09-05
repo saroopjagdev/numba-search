@@ -101,14 +101,24 @@ class ShardStream:
         block_records: int = 1 << 20,
         seed: int = 0,
         holdout: int = 0,
+        reserved: bool = False,
     ) -> None:
         self.shards = sorted(directory.glob("shard*.bin"))
         if not self.shards:
             raise FileNotFoundError(f"no shard*.bin in {directory}")
         # The last few shards are reserved for validation so that no position the net trains on is
         # ever scored against it. Shards are interchangeable, so holding out whole files is enough.
+        #
+        # `reserved` selects which side of that split you get: False for the training majority,
+        # True for the withheld remainder. Both callers must pass the *same* holdout, or the split
+        # they think they are on either side of is not the same split.
         if holdout:
-            self.shards = self.shards[:-holdout]
+            if reserved:
+                self.shards = self.shards[-holdout:]
+            else:
+                self.shards = self.shards[:-holdout]
+        elif reserved:
+            raise ValueError("reserved=True is meaningless with holdout=0: nothing was withheld")
         self.batch_size = batch_size
         self.block_records = block_records
         self.rng = np.random.default_rng(seed)

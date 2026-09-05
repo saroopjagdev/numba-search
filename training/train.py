@@ -228,7 +228,14 @@ def train(
     schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=max(1, steps))
 
     stream = ShardStream(shards, batch_size=batch_size, seed=1, holdout=holdout)
-    validation = next(ShardStream(shards, batch_size=8192, seed=99, holdout=0).batches())
+    # `reserved=True` is the whole point of `holdout`, and passing 0 here quietly drew the
+    # validation batch from the shards being trained on. Harmless for the one thing it currently
+    # feeds -- float-versus-int divergence is a property of the arithmetic, and a memorised
+    # position rounds the same as a novel one -- but it would silently flatter any generalisation
+    # number measured on this batch, so it is wrong to leave in place.
+    validation = next(
+        ShardStream(shards, batch_size=8192, seed=99, holdout=holdout, reserved=True).batches()
+    )
 
     # flush=True on every print in this file, not just the periodic ones. A run this long is
     # watched through a redirected log, and Python block-buffers a pipe: without it the opening
