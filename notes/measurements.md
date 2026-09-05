@@ -745,3 +745,72 @@ Two consequences, and the second reverses an assumption I had been carrying:
 The honest process note: the plan said to train on Colab and listed it under "needs the user", and
 a ten-hour local run was started anyway without ever putting that request in front of them. The
 sleep did not cause that; it only exposed it.
+
+## 5 Sep -- the training corpus had tactical positions in it, and now does not
+
+Asked to prioritise quality over time and compute, the largest untapped lever turned out not to be
+in the engine at all but in what the net is allowed to learn from.
+
+The net is only ever asked to score the *leaves* of a search that has already resolved captures. A
+position whose best move is a capture or a promotion, or where the side to move is in check, is
+therefore both a question it will never be asked and a noisy label -- its true value depends on a
+tactic rather than on the structure the net can see. Excluding those is standard rather than an
+idea of ours; confirmed against three independent sources before spending any time on it:
+Stockfish's trainer calls it *smart fen skipping*, Arasan's generator applies exactly
+capture-plus-check, and arXiv:2412.17948 studies the effect directly. We were not doing it. Every
+net trained before today inherits the gap.
+
+Measured composition of the database, on 55,348 records:
+
+| Property of the position | Share |
+|---|---|
+| Side to move is in check | 8.0% |
+| Best move is a capture | 20.3% |
+| Best move is a promotion | 0.4% |
+| **Survives the filter** | **73.1%** |
+
+Against the raw input stream, where the `depth >= 20` and plausibility filters also apply, the
+combined keep rate is **61.8%**: 394.7M records in, roughly **244M positions and 7.8 GB** out,
+against 377.8M and 12.09 GB unfiltered. That number decides something else for free -- 7.8 GB fits
+inside Google Drive's 15 GB free tier, so **all 64 shards can go to Colab**, and the earlier
+compromise of uploading a 32-shard subset is unnecessary.
+
+### The gate found a real bug, which is the whole argument for having built it
+
+Attack detection written from scratch is silent when wrong. It would quietly admit or discard the
+wrong positions and degrade every net trained afterwards, with nothing pointing back at it.
+`tools/verify_quiet_filter.py` therefore checks `in_check()` and `is_quiet()` against python-chess
+-- the one authority available that we did not write -- on records drawn from the actual database
+rather than anything synthetic.
+
+First run: **0 check-detection mismatches, 395 whole-filter mismatches.** Every one of them was
+castling. The Lichess database writes castling in UCI's king-takes-rook form (`e1h1`, `e8a8`), and
+the first version read the occupied target square as a capture. It would have thrown away *every
+castling position in the corpus* -- precisely the positions the king-safety weights need. Fixed by
+testing the colour of the occupant rather than the occupancy bit.
+
+Second run, 55,348 positions: **zero mismatches of either kind.** Note which half was right first
+time. The ray-walking check detection, which felt like the risky part, was exact; the bug was in a
+one-line assumption about move notation.
+
+### Local training killed at step 11,600/60,000
+
+Recent windows were running ~19-20k pos/s, so the run would have finished around 01:00 tomorrow --
+not the 22:50 quoted earlier, and the correction is in the direction of *slower*. It was killed
+anyway, for a reason unrelated to speed: it was training on the unfiltered corpus, so its output
+was going to be discarded whatever it converged to.
+
+Filtering at load time was considered and is not possible. The packed 32-byte record stores
+occupancy, piece codes, score, side to move and bucket -- but not the best move, so the capture
+test cannot be reconstructed after the fact. Re-preprocessing is forced, not chosen.
+
+The step-10,000 checkpoint is kept as `nets/unfiltered_step10k.npz`, and the unfiltered 12 GB
+corpus is kept in `shards/` as the control arm for a filtered-versus-unfiltered A/B. That A/B is
+the reason `--no-quiet-filter` exists: the filter should have to win a match, not be taken on faith
+because three strong engines do it.
+
+One thing worth watching from the killed run: **loss sat at ~0.016 from step 6,000 to 11,600 with
+no visible improvement over 5,600 steps.** That is either early convergence, which would be
+surprising at a fifth of the schedule, or the loss being dominated by easy positions. If the
+filtered run shows the same plateau, the learning-rate schedule needs looking at before the width
+A/B, because a flat loss curve would make all four widths look identical.
