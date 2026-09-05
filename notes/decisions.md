@@ -165,3 +165,24 @@ The general lesson is the one worth keeping: **the comment claimed a property th
 have, and nothing tested the claim.** Layout assumptions are invisible to correctness tests — the
 transposed version computed identical evaluations, just slowly. It was caught by writing the engine
 side against the documented layout and finding the shapes disagreed.
+
+## 2026-09-05 — Width stays at 256; the A/B is resolved — MEASURED
+
+The plan deferred `128 / 256 / 512 / 1024` to measurement in our own engine, with the burden of
+proof on the bigger net. Both halves are now measured and the burden is not discharged.
+
+`tools/eval_quality.py` on reserved holdout shards: WDL MAE 0.0656 / 0.0630 / 0.0602 / 0.0576.
+Wider is better monotonically, with no saturation.
+
+`tools/net_speed.py` at fixed depth: 1.00x / 1.35x / 1.75x / 3.09x time, at a measured EBF of 2.19,
+so 0.38 / 0.71 / 1.44 plies given up. Evaluation gains are sublinear in width, cost is superlinear.
+512 and 1024 lose clearly. 128 versus 256 is inside the noise; 256 wins on the trustworthy node
+column, on being the locked call, and on the fact that further search work makes plies cheaper and
+evaluation relatively dearer.
+
+Understated cost, in our favour: the measurement is single-process, but a real game shares L3 with
+an opponent hammering memory, which penalises the 1.6 MB net far more than the 393 KB one.
+
+This is decided on a proxy plus a speed measurement, not on games, because the SPRT is still blocked
+on memory. It is the strongest evidence obtainable on this machine. 128 is the named fallback if
+init-budget pressure later forces a cut. See `notes/measurements.md`, 5 Sep.

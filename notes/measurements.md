@@ -1054,3 +1054,56 @@ that searches shallower can still lose. The SPRT remains the gate.
 
 Width improves the trained objective monotonically and with no sign of saturation, so the choice
 is entirely a speed question.
+
+## 5 Sep -- what width costs in search, and the width decision
+
+`tools/eval_quality.py` said wider is monotonically better and said nothing about price.
+`tools/net_speed.py` is the other half: 24 fuzz positions searched to a fixed depth with an
+unreachable node budget, all four nets swapped into one `Searcher` so the TT, killers and history
+are identical and only the weights differ, minimum over three interleaved repeats.
+
+Two earlier attempts at this were thrown away rather than reported. The first timed
+`Network.evaluate` in a Python loop and measured the wrapper, not the net. The second reported 1024
+as *faster* than 128, which cannot be true when it does eight times the arithmetic; the machine was
+at 94% memory load and the number was contention. The fix was to add a load-immune column.
+
+    depth 8, 3 repeats               depth 7, 1 repeat
+    net           nodes  best s  rel      nodes  best s  rel     EBF
+    net128    4,098,210    6.39  1.00  1,927,413    2.89  1.00   2.13
+    net256    4,005,071    8.60  1.35  1,920,555    3.97  1.37   2.09
+    net512    3,515,735   11.16  1.75  1,468,721    4.67  1.61   2.39
+    net1024   3,215,777   19.73  3.09  1,495,620    8.72  3.01   2.15
+
+Node counts were identical across all repeats, as a fixed-depth search with an unreachable budget
+must be -- that column does not depend on machine load and is the one to believe. The time column
+is corroborated rather than assumed: the two runs are independent and reproduce the ratios to
+within 0.14, so on this evidence the seconds are usable too.
+
+Throughput: 641k, 466k, 315k, 163k nps.
+
+**Width does cut nodes, and nowhere near enough to pay for itself.** A better evaluation orders
+moves better and cuts more, which is real -- 1024 searches 21.5% fewer nodes than 128 -- but it
+costs 3.09x the time per node to get there. Converting the time ratio to plies at the measured
+EBF of 2.19, `log(ratio)/log(2.19)`:
+
+    256 costs 0.38 ply    512 costs 0.71 ply    1024 costs 1.44 ply
+
+against 128. Set that beside the WDL MAE from `eval_quality.py`: 0.0656, 0.0630, 0.0602, 0.0576,
+i.e. 4.0%, 8.2% and 12.2% relative error reduction for those three prices. The gains are sublinear
+in width while the cost is superlinear, so the trade gets monotonically worse the wider we go.
+
+**Decision: ship 256.** 512 and 1024 are clear rejects -- 1024 gives up nearly a ply and a half for
+a 12% error reduction, which at any plausible Elo-per-ply in bullet is a large net loss. 128 versus
+256 is genuinely close: 0.38 ply against one width doubling, which is a coin flip on the numbers I
+have. Three tie-breakers go to 256. The nodes column, which is the trustworthy one, slightly favours
+it. The gap widens in our favour as search work makes plies cheaper and evaluation quality relatively
+more valuable. And 256 is the locked architecture call, which changing requires evidence that clears
+a bar this does not.
+
+Two caveats recorded honestly. This ran in a single process; in a real game both agents share L3, so
+the wider nets degrade more under match conditions than measured here and their true cost is
+understated -- which only strengthens the rejection of 512 and 1024. And none of this is a strength
+measurement. The SPRT remains the gate and is still blocked on memory, so the width choice rests on
+a proxy for eval quality plus a real measurement of speed, not on games.
+
+128 stays the named fallback if init-budget or speed pressure later forces a cut.
