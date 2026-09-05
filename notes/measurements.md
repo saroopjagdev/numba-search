@@ -632,3 +632,75 @@ budget of 3.0 s (95.9 s left: `(95840/30 + 375) * 0.85`). Move 1 of round 14 mat
 failure mode where nothing can interrupt a jitted call once started. It was harmless with 91 s on
 the clock and would not be at 5 s. It is also the direct argument against simply raising the
 budget: the overrun is proportional to what we hand a single iteration.
+
+## 5 Sep — two Phase 4 questions answered while training runs
+
+Both were chosen because they cost almost no CPU. Anything heavier would both slow the overnight
+run and produce contended numbers, which is the mistake already recorded above.
+
+### The quantisation divergence is rounding noise, not a scale bug
+
+`validate_quantisation` reports a mean *absolute* difference, which cannot tell a systematic bias
+from symmetric noise -- 7 cp of each give the same number. Re-measured signed, on 8,192 held-out
+positions through the 400-step `rate.pt`:
+
+| quantity | value |
+|---|---|
+| float eval | mean +28.5 cp, sd 447.8, range [-2716, +5548] |
+| signed error | **mean -0.111 cp**, sd 9.111 cp, median +0.023 |
+| abs error | mean 7.21 cp, p99 23.7, worst 36.2 |
+| \|mean\| / sd | 0.012 |
+| corr(eval, error) | **+0.0015** |
+| regression slope | +0.000031, i.e. a 0.003% scale error |
+
+Zero-mean, and uncorrelated with the evaluation being quantised. A wrong scale factor would drive
+that correlation toward plus or minus one and show as a slope of k/100; neither happens. The 36 cp
+worst case is the tail of a 9 cp spread, not evidence of anything. **Nothing to fix.**
+
+One thing did fall out of it. Peak absolute weights are **54 in the transformer and 15 in the
+output**, against an int16 limit of 32767. QA=255 and QB=64 leave three orders of magnitude of
+headroom unused, so output weights land on only about fifteen distinct levels and carry most of
+the 9 cp. Raising QA/QB would cut the noise roughly proportionally, costs nothing at run time (the
+output dot already accumulates in int64), and is a post-training change to `quantise()` plus two
+engine constants. Noise at 2.4% of signal is probably worth only a few Elo, so this is an SPRT
+candidate after the run finishes, not a reason to touch anything now.
+
+### Pondering is possible, and costs one keyword
+
+numba's `njit` holds the GIL unless `nogil=True`. If that applied to us a ponder thread would
+freeze move responses, and Phase 4's +40-60 Elo item would be dead in the shape we assumed. It
+does apply, and it is fixable. A jitted busy-loop on a background thread, with the main thread
+sampling its own responsiveness:
+
+| entry point | background | main-thread samples in ~2 s | worst stall |
+|---|---|---|---|
+| `njit` | 2.01 s | **1** | 2008 ms |
+| `njit(nogil=True)` | 2.26 s | 1379 | **7.2 ms** |
+
+Without `nogil` the main thread got a single sample in two seconds: a total freeze, exactly the
+predicted failure.
+
+**And the release is inherited.** An outer function marked `nogil=True` calling an inner one
+declared without it -- as all 40 of `engine/`'s jitted functions are -- still gave the main thread
+1531 samples. Nested njit calls are direct native calls with no Python in between, so the GIL
+stays released for the whole tree. Pondering therefore costs `nogil=True` on the search entry
+point alone, not forty edits.
+
+Two consequences for Phase 4, now grounded rather than assumed. The abort flag works: `control` is
+a shared array the main thread can write while the ponder thread runs, and it can only do that
+because the GIL is free. And on one core the ponder thread must be *stopped*, not merely ignored,
+or it takes half the search it was meant to help -- with 7 ms of signalling latency that is a
+scheduling problem rather than an impossible one.
+
+Compile-time cost of `nogil=True` is not measured and must not be measured until the machine is
+quiet; it goes straight into the init budget.
+
+### Aside: what "low memory" during the run actually was
+
+The background waiter on the training log was killed by the system for low memory, with 0.37 GB
+free of 7.70 GB. Enumerating working sets accounted for only about 1.6 GB across everything
+running, training included at 69 MB. The rest is the Windows file cache: the run streams 12 GB of
+shards end to end, so the cache fills and the OS reports it as in use. It is reclaimable and the
+run is not at risk from it. Worth writing down because the alarming number and the harmless cause
+look identical from the top-line figure -- the same shape of mistake as the contended init
+timings.
