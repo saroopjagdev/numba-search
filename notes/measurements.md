@@ -896,3 +896,75 @@ to avoid it.
 
 The general lesson, and the reason for the table: **the obvious number in the log was not the
 cause.** 74.9 s unused is a genuine defect that had nothing to do with why we lost.
+
+## 5 Sep -- the search hands back a fifth of the time it is given, and now does not
+
+Measured directly with `tools/clock_fuzz.py` rather than inferred: 64 real positions sampled from
+the quiet corpus, seven budgets from 50 ms to 3200 ms, no opponent process competing.
+
+| budget | baseline consumption | candidate consumption | baseline depth | candidate depth |
+|---|---|---|---|---|
+| 50 ms | 93% | 111% | 9.5 | 10.1 |
+| 200 ms | 87% | 100% | 12.9 | 13.5 |
+| 800 ms | 83% | 95% | 15.2 | 15.9 |
+| 3200 ms | 80% | 94% | 17.5 | 18.6 |
+| all | **86%** | **100%** | | **+0.6 to +1.1 ply** |
+
+**Correction to the figure quoted on 4 Sep.** The clock simulator, fitted against the leftover
+clock in seven rated games, put budget consumption at 75%, and the banked time was described as
+25%. Direct measurement says 86% overall. The two are not really in conflict -- games run at
+roughly a 3.7 s budget, where the direct figure is 80% -- but 75% was a fitted parameter and 80%
+is a measured one, so the recoverable time is about 14 points, not 25. The direction was right and
+the size was overstated.
+
+**The depth gain is larger than the extra time explains.** 14% more time at a branching factor
+near 3 buys about 0.13 ply; the measurement shows 0.6 to 1.1. The remainder comes from keeping
+partial depths: an iteration that runs out of clock now returns the best root move it proved
+rather than nothing, so work that used to be discarded outright reaches the board. That is also
+why the two are tested as one change -- lowering the floor from 35% to 10% is only safe *because*
+partial depths are kept, and keeping them is only worth much *because* the floor came down.
+
+**The overrun tail did not get worse, which was the thing to check.** Worst case 184% baseline
+against 182% candidate; the tail is set by the node-limit machinery, not by the banking rule, and
+that machinery is sized from time remaining rather than from the whole budget. What did rise is
+how often the budget is exceeded at all -- 32% of searches to 66%, and 12% to 19% above 115%. That
+is the intended effect of aiming at the budget instead of well short of it, and it is safe because
+`_budget_ms` already applies SAFETY = 0.85 before any of this: 100% of budget is 85% of what the
+clock could actually afford.
+
+The earlier stress assumption turns out to have been conservative in the right direction but for
+the wrong reason. The clock simulation stressed every move at 1.15x uniformly; reality is a mean
+of 1.00 with a tail reaching 1.8x at 50 ms budgets. Mean is what depletes a clock over a game and
+1.00 < 1.15, so the sizing holds. The tail bites on a single move only, and 182% of a 50 ms budget
+is 91 ms.
+
+## 5 Sep -- the clock SPRT was killed by the machine, not by the result
+
+18 games at 120 s + 0.5 s, concurrency 4: +7 =7 -4, Elo +58.5 +- 132.7, LLR +0.14 against a 2.94
+bound. Then the run was killed for low memory.
+
+The cause is the machine, and it constrains everything measured from here. 7.7 GB of RAM in total,
+with Chrome and the editor already holding about 3 GB. Concurrency 4 means *eight* agent
+processes, because every game runs two, and each peaks during numba compilation. Concurrency drops
+to 2 for every future run, which costs roughly half the throughput: about 0.35 games/min at the
+real time control, so a few hundred games is an overnight job and a thousand is not available.
+
+That is a real limit on what can be resolved and it is better stated than discovered later. A
+1000-game SPRT at 120 s is not affordable on this hardware, so changes get tested as coherent
+groups rather than one constant at a time.
+
+## 5 Sep -- the engine's NNUE inference matches the trainer's reference
+
+`tools/verify_nnue.py`, 2048 positions from the quiet corpus, against a synthesised random net:
+
+    bucket disagreements     0
+    mean |difference|        0.498 cp
+    worst |difference|       0.995 cp
+
+The mean sitting at almost exactly 0.5 cp and the worst just under 1.0 is the signature of the one
+difference that is supposed to exist -- the trainer finishes in floating point, the engine floor
+divides -- and of nothing else. A permuted piece code, a broken black perspective or an off-by-one
+bucket would each show up as tens or hundreds of centipawns, not half of one.
+
+This closes the quantisation path before the net exists, which is the point of running it against
+a synthesised net rather than waiting for a trained one.
