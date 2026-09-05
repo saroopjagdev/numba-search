@@ -21,6 +21,7 @@ Exit status is 0 if the candidate is accepted (H1), 1 if rejected (H0), 2 if inc
 
 import argparse
 import itertools
+import json
 import math
 import os
 import random
@@ -208,7 +209,18 @@ def main() -> None:
     parser.add_argument("--increment-ms", type=int, default=100)
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--shards", type=int, default=1, help="split the schedule across N runners")
+    parser.add_argument("--shard", type=int, default=0, help="which slice this process plays")
+    parser.add_argument(
+        "--results-json",
+        type=Path,
+        default=None,
+        help="write this shard's tally here for tools/sprt_combine.py",
+    )
     args = parser.parse_args()
+
+    if not 0 <= args.shard < args.shards:
+        sys.exit(f"--shard {args.shard} is not in range for --shards {args.shards}")
 
     concurrency = _resolve_concurrency(args.concurrency)
     lower = math.log(args.beta / (1.0 - args.alpha))
@@ -221,8 +233,20 @@ def main() -> None:
     pairings = [(fen, colour) for fen in fens for colour in (True, False)]
     schedule = list(itertools.islice(itertools.cycle(pairings), args.max_games))
 
+    # Shard by opening *pair*, never by game. `pairings` alternates colours, so striding over
+    # individual games would hand an even-numbered shard every white game and the next shard every
+    # black one. Each slice would then be a colour-biased sample, and a runner that died would
+    # skew the combined tally by however much the first move is worth. Taking both colours of an
+    # opening together keeps every shard balanced on its own and the combination balanced whatever
+    # subset of shards comes back.
+    if args.shards > 1:
+        pairs = [schedule[index : index + 2] for index in range(0, len(schedule), 2)]
+        schedule = [game for pair in pairs[args.shard :: args.shards] for game in pair]
+
     print(f"SPRT  H0: {args.elo0:+.0f} Elo   H1: {args.elo1:+.0f} Elo")
     print(f"      bounds [{lower:.2f}, {upper:.2f}]   {args.candidate} vs {args.baseline}")
+    if args.shards > 1:
+        print(f"      shard {args.shard} of {args.shards}, {len(schedule)} games of this slice")
     print(
         f"      {args.base_ms / 1000:.0f}s + {args.increment_ms / 1000:.1f}s, "
         f"{len(fens)} openings, concurrency {concurrency}, max {args.max_games} games\n"
@@ -263,6 +287,12 @@ def main() -> None:
                 flush=True,
             )
 
+            # A shard sees only its own slice, so its LLR is not the test statistic and stopping on
+            # it would be both wrong and biased: shards that happened to draw favourable openings
+            # would stop early and contribute fewer games than the rest. Shards play their whole
+            # slice and `tools/sprt_combine.py` applies the test once, to the pooled tally.
+            if args.shards > 1:
+                continue
             if llr >= upper:
                 verdict = "accepted"
                 break
@@ -279,8 +309,32 @@ def main() -> None:
     if tally.failures:
         detail = ", ".join(f"{k}={v}" for k, v in sorted(tally.failures.items()))
         print(f"  FAILURES: {detail}  <- investigate before trusting this result")
-    print("\n  record this in notes/measurements.md")
 
+    if args.results_json is not None:
+        args.results_json.write_text(
+            json.dumps(
+                {
+                    "shard": args.shard,
+                    "shards": args.shards,
+                    "wins": tally.wins,
+                    "draws": tally.draws,
+                    "losses": tally.losses,
+                    "failures": tally.failures,
+                    "base_ms": args.base_ms,
+                    "increment_ms": args.increment_ms,
+                    "seed": args.seed,
+                    "candidate": str(args.candidate),
+                    "baseline": str(args.baseline),
+                },
+                indent=2,
+            )
+        )
+        print(f"  wrote {args.results_json}")
+        # A shard has no verdict to report. Exiting 0 keeps a healthy shard from failing the
+        # workflow; the verdict is `sprt_combine.py`'s job and its exit status is the real one.
+        return
+
+    print("\n  record this in notes/measurements.md")
     sys.exit({"accepted": 0, "rejected": 1, "inconclusive": 2}[verdict])
 
 
