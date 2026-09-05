@@ -966,5 +966,45 @@ difference that is supposed to exist -- the trainer finishes in floating point, 
 divides -- and of nothing else. A permuted piece code, a broken black perspective or an off-by-one
 bucket would each show up as tens or hundreds of centipawns, not half of one.
 
+## 5 Sep -- partial depths do not cost move quality, and the test is underpowered
+
+More depth is worth nothing if the moves recovered from an unfinished iteration are systematically
+worse than the finished shallower moves they replace. `tools/move_agreement.py` asks that directly:
+play each position under a clock, search it again to fixed depth 16 with no clock at all, and count
+agreement. The reference is fixed-depth and effectively unlimited precisely so that no clock logic
+runs in either build and both compute the same reference move; it was computed once (24 positions,
+5.6 min) and reused, with the first three spot-checked against each build.
+
+24 positions, `--tt-bits 19`, forced down to one process because four earlier runs were killed for
+memory on this 7.7 GB machine.
+
+    budget    baseline   candidate
+      50 ms      58.3%       54.2%
+     100 ms      54.2%       54.2%
+     200 ms      62.5%       50.0%
+     400 ms      58.3%       62.5%
+     800 ms      70.8%       70.8%
+    ------------------------------
+    all           60.8%       58.3%
+
+**This does not separate the builds.** 120 samples per build put the standard error near 4.5
+points, so a 2.5 point gap is noise. What the run does establish is the absence of the failure it
+was built to catch: had partial-depth moves been badly chosen, short budgets -- where the partial
+path fires on nearly every move -- would have collapsed, and 54.2% against 58.3% at 50 ms is not a
+collapse.
+
+The reported depths, however, are not usable and should not be read as a result. The candidate
+shows lower mean completed depth here (7.2 vs 7.7 at 50 ms) and higher in the fuzz (10.1 vs 9.5),
+which cannot both describe search behaviour: the floor only decides whether to *start* one more
+iteration, and an iteration that starts and does not finish cannot lower `completed`. Per position
+the candidate's depth must be greater than or equal to the baseline's. The two runs were sequential
+under different machine load, and the searches are wall-clock driven, so the depth column is
+measuring the load and not the change. A fair depth comparison needs the builds interleaved
+position by position, which two separate checkouts cannot do in one process.
+
+Transposition-table contamination from the reference pass was the first suspicion and is ruled out:
+`Searcher.new_game` zeroes all five TT arrays plus killers, history and `game_count`, and it is
+called before every timed search.
+
 This closes the quantisation path before the net exists, which is the point of running it against
 a synthesised net rather than waiting for a trained one.
