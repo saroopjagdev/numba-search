@@ -240,8 +240,16 @@ for width in (128, 512, 1024):
             code(
                 f"""
 from google.colab import files
+from pathlib import Path
 
-files.download('{DRIVE_NETS}/net256.npz')
+# Both files, and only the ones that exist. The `.npz` is the quantised net the engine loads; the
+# `.pt` is the float model, and without it a run can only be repeated from scratch rather than
+# continued or re-quantised. Drive keeps them too, but a reclaimed session is a bad moment to
+# discover the local copy was never taken.
+nets = Path('{DRIVE_NETS}')
+for net in sorted(list(nets.glob('net*.npz')) + list(nets.glob('net*.pt'))):
+    print(f"downloading {{net.name}} ({{net.stat().st_size / 1024:.0f}} KB)")
+    files.download(str(net))
 """
             ),
             markdown(
