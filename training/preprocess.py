@@ -152,8 +152,12 @@ def encode(occupancy: int, codes: list[int], score: int, stm: int) -> bytes:
     )
 
 
-def best_score(evals: list[dict[str, Any]]) -> int | None:
-    """The deepest evaluation's principal line, as a clamped white-relative centipawn score."""
+def best_score(evals: list[dict[str, Any]]) -> tuple[int, str] | None:
+    """The deepest evaluation's principal line, as a clamped white-relative score and its move.
+
+    The move comes back with the score because the quiet-position filter needs it, and finding it
+    a second time would mean walking the eval list twice for every one of 394 million records.
+    """
     best_depth = -1
     chosen = None
     for entry in evals:
@@ -162,43 +166,194 @@ def best_score(evals: list[dict[str, Any]]) -> int | None:
             chosen = entry["pvs"][0]
     if chosen is None or best_depth < MIN_DEPTH:
         return None
+    move = chosen.get("line", "").split(" ", 1)[0]
+    if not move:
+        return None
     if "cp" in chosen:
-        return max(-SCORE_CLAMP, min(SCORE_CLAMP, int(chosen["cp"])))
+        return max(-SCORE_CLAMP, min(SCORE_CLAMP, int(chosen["cp"]))), move
     mate = int(chosen["mate"])
     # A mate of 0 means the game is already over; treat it as unusable rather than guess a sign.
     if mate == 0:
         return None
-    return SCORE_CLAMP if mate > 0 else -SCORE_CLAMP
+    return (SCORE_CLAMP if mate > 0 else -SCORE_CLAMP), move
 
 
-def process_chunk(job: tuple[int, list[bytes]]) -> tuple[int, list[bytes]]:
+def _knight_targets() -> list[list[int]]:
+    table = []
+    for square in range(64):
+        file, rank = square & 7, square >> 3
+        squares = []
+        for df, dr in ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)):
+            f, r = file + df, rank + dr
+            if 0 <= f < 8 and 0 <= r < 8:
+                squares.append(r * 8 + f)
+        table.append(squares)
+    return table
+
+
+def _king_targets() -> list[list[int]]:
+    table = []
+    for square in range(64):
+        file, rank = square & 7, square >> 3
+        squares = []
+        for df in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if df or dr:
+                    f, r = file + df, rank + dr
+                    if 0 <= f < 8 and 0 <= r < 8:
+                        squares.append(r * 8 + f)
+        table.append(squares)
+    return table
+
+
+def _rays() -> list[list[list[int]]]:
+    """Squares outward from each square along each of eight directions, nearest first.
+
+    Orthogonals occupy indices 0..3 and diagonals 4..7, which is what lets the attack test pick the
+    right pair of attacker types by comparing the direction index against four.
+    """
+    table = []
+    for square in range(64):
+        file, rank = square & 7, square >> 3
+        per_direction = []
+        for df, dr in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            squares = []
+            f, r = file + df, rank + dr
+            while 0 <= f < 8 and 0 <= r < 8:
+                squares.append(r * 8 + f)
+                f += df
+                r += dr
+            per_direction.append(squares)
+        table.append(per_direction)
+    return table
+
+
+KNIGHT_TARGETS = _knight_targets()
+KING_TARGETS = _king_targets()
+RAYS = _rays()
+
+
+def in_check(mailbox: bytearray, king_square: int, black_to_move: bool) -> bool:
+    """Is the king on `king_square` attacked?
+
+    Walks outward from the king rather than testing every enemy piece: a king has at most eight
+    knight squares and eight rays, where the board has up to thirty-one other pieces. `mailbox`
+    holds piece codes plus one, so that zero can mean empty.
+    """
+    enemy = 0 if black_to_move else 6  # code offset of the attacking side
+    for square in KNIGHT_TARGETS[king_square]:
+        if mailbox[square] == enemy + 2:  # knight
+            return True
+    for square in KING_TARGETS[king_square]:
+        if mailbox[square] == enemy + 6:  # king
+            return True
+
+    # Pawns attack toward the far rank, so the attacker sits one rank back from the king.
+    king_file = king_square & 7
+    step = -8 if black_to_move else 8
+    for side in (-1, 1):
+        square = king_square + step + side
+        if 0 <= square < 64 and abs((square & 7) - king_file) == 1 and mailbox[square] == enemy + 1:
+            return True
+
+    for direction, ray in enumerate(RAYS[king_square]):
+        for square in ray:
+            piece = mailbox[square]
+            if piece:
+                if piece == enemy + 5:  # queen, attacks along every direction
+                    return True
+                if piece == enemy + (4 if direction < 4 else 3):  # rook orthogonal, bishop diagonal
+                    return True
+                break  # the first piece on a ray blocks everything behind it
+    return False
+
+
+def is_quiet(occupancy: int, codes: list[int], black_to_move: bool, move: str) -> bool:
+    """Would this position's evaluation survive a quiescence search unchanged?
+
+    Positions whose best move is a capture or a promotion, and positions where the side to move is
+    in check, are excluded. The reason is that the net is only ever asked to score the *leaves* of a
+    search that has already resolved captures -- so a tactical position is both a question it will
+    never be asked and a noisy label, since its true value depends on a tactic rather than on the
+    structure the net can see. This is the standard rule: Stockfish's trainer calls it smart fen
+    skipping, Arasan's generator applies exactly capture-plus-check, and arXiv:2412.17948 studies
+    it.
+
+    Not implemented here is that paper's stronger qsearch-delta filter, which catches quiet-looking
+    positions that are nonetheless tactically resolved -- a knight forking king and rook. It needs a
+    quiescence search per position, which at 394 million positions is a different program.
+    """
+    if len(move) < 4:
+        return False
+    if len(move) > 4:  # a promotion carries a fifth character
+        return False
+
+    origin = (ord(move[0]) - 97) + (ord(move[1]) - 49) * 8
+    target = (ord(move[2]) - 97) + (ord(move[3]) - 49) * 8
+    if not 0 <= origin < 64 or not 0 <= target < 64:
+        return False
+
+    mailbox = bytearray(64)
+    remaining = occupancy
+    king_square = -1
+    king_code = 11 if black_to_move else 5
+    for code in codes:
+        square = (remaining & -remaining).bit_length() - 1
+        remaining &= remaining - 1
+        mailbox[square] = code + 1
+        if code == king_code:
+            king_square = square
+
+    # A piece on the target square is a capture only if it is an *enemy* piece. The database writes
+    # castling in UCI's king-takes-rook form -- e1h1, e8a8 -- so a friendly piece on the target is a
+    # castle, which is quiet. Reading the occupancy bit alone would have thrown every castling
+    # position away, and those are exactly the positions the king-safety weights need.
+    occupant = mailbox[target]
+    if occupant:
+        enemy_low, enemy_high = (1, 6) if black_to_move else (7, 12)
+        if enemy_low <= occupant <= enemy_high:
+            return False
+
+    # A pawn changing file with nothing on the target square is an en-passant capture.
+    if mailbox[origin] in (1, 7) and (origin & 7) != (target & 7):
+        return False
+    if king_square < 0:
+        return False
+    return not in_check(mailbox, king_square, black_to_move)
+
+
+def process_chunk(job: tuple[int, list[bytes], bool]) -> tuple[int, list[bytes]]:
     """Parse a batch of raw JSON lines into per-shard blobs. Runs in a worker process.
 
     The shard is drawn here rather than in the parent so the randomness costs nothing serial. It is
     seeded from the chunk index, so a re-run with the same input reproduces the same split.
     """
-    index, lines = job
+    index, lines, quiet_only = job
     rng = random.Random(index)
     buckets: list[bytearray] = [bytearray() for _ in range(SHARDS)]
     kept = 0
     for line in lines:
         record = orjson.loads(line)
-        score = best_score(record["evals"])
-        if score is None:
+        best = best_score(record["evals"])
+        if best is None:
             continue
+        score, move = best
         fen = record["fen"]
         placement, _, rest = fen.partition(" ")
         occupancy, codes = parse_board(placement)
         if not is_plausible(occupancy, codes):
             continue
-        buckets[rng.randrange(SHARDS)] += encode(
-            occupancy, codes, score, 1 if rest[0] == "b" else 0
-        )
+        black_to_move = rest[0] == "b"
+        if quiet_only and not is_quiet(occupancy, codes, black_to_move, move):
+            continue
+        buckets[rng.randrange(SHARDS)] += encode(occupancy, codes, score, 1 if black_to_move else 0)
         kept += 1
     return kept, [bytes(bucket) for bucket in buckets]
 
 
-def read_chunks(source: Path, limit: int) -> Iterator[tuple[int, list[bytes]]]:
+def read_chunks(
+    source: Path, limit: int, quiet_only: bool
+) -> Iterator[tuple[int, list[bytes], bool]]:
     """Decompress and split into batches of lines. This is the serial bottleneck; keep it bare."""
     index = 0
     read = 0
@@ -215,17 +370,18 @@ def read_chunks(source: Path, limit: int) -> Iterator[tuple[int, list[bytes]]]:
             pending.extend(lines)
             read += len(lines)
             while len(pending) >= CHUNK_LINES:
-                yield index, pending[:CHUNK_LINES]
+                yield index, pending[:CHUNK_LINES], quiet_only
                 pending = pending[CHUNK_LINES:]
                 index += 1
             if limit and read >= limit:
                 break
     if pending:
-        yield index, pending
+        yield index, pending, quiet_only
 
 
-def run(source: Path, destination: Path, limit: int, workers: int) -> None:
+def run(source: Path, destination: Path, limit: int, workers: int, quiet_only: bool) -> None:
     destination.mkdir(parents=True, exist_ok=True)
+    print(f"quiet-position filter: {'on' if quiet_only else 'off'}", flush=True)
     # Sixty-four files held open for the whole pass, which is why they are not context-managed
     # individually; the `finally` below closes them. Nesting 64 `with` blocks would say the same
     # thing at far greater length.
@@ -239,7 +395,8 @@ def run(source: Path, destination: Path, limit: int, workers: int) -> None:
     started = time.perf_counter()
     try:
         with multiprocessing.Pool(workers) as pool:
-            for kept, blobs in pool.imap(process_chunk, read_chunks(source, limit), chunksize=1):
+            jobs = read_chunks(source, limit, quiet_only)
+            for kept, blobs in pool.imap(process_chunk, jobs, chunksize=1):
                 written += kept
                 chunks += 1
                 for handle, blob in zip(handles, blobs, strict=True):
@@ -275,8 +432,19 @@ def main() -> None:
     parser.add_argument(
         "--workers", type=int, default=max(1, (multiprocessing.cpu_count() * 3) // 4)
     )
+    parser.add_argument(
+        "--no-quiet-filter",
+        action="store_true",
+        help="keep tactical positions, for an A/B against a filtered corpus",
+    )
     arguments = parser.parse_args()
-    run(arguments.source, arguments.destination, arguments.limit, arguments.workers)
+    run(
+        arguments.source,
+        arguments.destination,
+        arguments.limit,
+        arguments.workers,
+        not arguments.no_quiet_filter,
+    )
 
 
 if __name__ == "__main__":
