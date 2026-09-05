@@ -27,10 +27,23 @@ MOVE_OVERHEAD_MS = 60.0
 # overspending once loses the game outright, underspending costs a few centipawns of depth.
 SAFETY = 0.85
 
-# Assumed moves remaining. The referee adjudicates at ply 300, so a game is at most 150 moves each,
-# but spreading the base clock over 150 would leave the engine playing far too fast in the opening
-# where the position is still decidable. Most games end well before the cap.
-ASSUMED_MOVES_LEFT = 30
+# Time we refuse to allocate, and the divisor applied to everything above it.
+#
+# The previous scheme divided the whole remaining clock by a fixed 30. That spends a constant
+# *fraction* of what is left each move, which decays geometrically and so can never spend the clock
+# down: across the first seven rated games it finished with between 32 and 88 seconds unused, never
+# once thought for longer than 4.1 seconds, and in the one loss was mated holding 74.9 of 134.5
+# seconds. Making the divisor count down with the move number was tried first and is not worth it --
+# long games force its floor up, the floor then governs everything, and it buys about 10%.
+#
+# Protecting the reserve explicitly is the better shape, because safety stops being an emergent
+# property of the divisor and becomes a structural one: the budget goes to zero as the clock
+# approaches RESERVE_MS whatever the divisor is, so the divisor can then be far smaller. Simulated
+# against the seven real games at the measured 75% budget consumption this is 1.30x the thinking
+# time, and with every move overrunning by the worst margin the logs actually show, the clock still
+# holds 17.3 seconds in the longest game and 13.4 seconds at the referee's ply-300 bound.
+RESERVE_MS = 15_000.0
+CLOCK_DIVISOR = 12
 
 _searcher = Searcher()
 _last_fullmove = 10**9
@@ -56,9 +69,13 @@ _warm_up()
 def _budget_ms(time_left_ms: int) -> float:
     """How long this move may take, in milliseconds."""
     usable = max(0.0, float(time_left_ms) - MOVE_OVERHEAD_MS)
+    # Only what sits above the reserve is available to divide up. As the clock falls towards the
+    # reserve this term vanishes and the increment below is all that is left, so the engine plays
+    # quickly rather than flagging -- which is the right way round.
+    spendable = max(0.0, usable - RESERVE_MS)
     # The increment is banked every move, so it is spendable in full over and above the share of
     # the base clock -- but only most of it, or the clock ratchets down over a long game.
-    allowance = usable / ASSUMED_MOVES_LEFT + 0.75 * 500.0
+    allowance = spendable / CLOCK_DIVISOR + 0.75 * 500.0
     # Never stake more than a quarter of what is left on one move, however good the position looks.
     return max(10.0, min(allowance, usable * 0.25) * SAFETY)
 
