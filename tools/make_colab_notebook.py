@@ -63,9 +63,25 @@ Trains `(768 -> 256) x 2 -> 1` SCReLU with 8 output buckets, then quantises to i
 `net256.npz` -- the file the engine loads. Nothing here ships; only the `.npz` does.
 
 **Before running:** set *Runtime -> Change runtime type -> T4 GPU*, and put the shard files in
-Google Drive under `MyDrive/chessathon/shards/`. A dozen shards (about 2.3 GB) is plenty: they were
-written by scattering records uniformly at random, so any subset of them is already a uniform
-random sample of the whole database and needs no reshuffling.
+Google Drive under `MyDrive/chessathon/shards/`. Records were scattered across the 64 shards
+uniformly at random when they were written, so **any subset is already a uniform random sample** of
+the whole database and needs no reshuffling -- which is what makes uploading a subset legitimate
+rather than a compromise.
+
+**Upload 32 of them: `shard00.bin` to `shard31.bin`, 6.05 GB, 189M positions.** The sizing is set
+by the width A/B, not by the 256-wide net:
+
+| shards | size | positions | epochs at 60k steps | positions/parameter, 256 | ditto, 1024 |
+|---|---|---|---|---|---|
+| 12 | 2.27 GB | 70.8M | 13.9 | 352 | 88 |
+| **32** | **6.05 GB** | **189M** | **5.2** | **940** | **235** |
+| 60 | 11.3 GB | 354M | 2.8 | 1763 | 441 |
+
+The 256-wide net has ~201k parameters and would be fine on 12 shards. The 1024-wide variant has
+~804k, and at 12 shards it would see 88 positions per parameter against the 256-wide net's 352 --
+so a width comparison run on that data would be measuring which net is least starved rather than
+which architecture is better. 32 shards is the knee: half of Drive's 15 GB free tier, five clean
+epochs, and no width handicapped. Going to 48 or 60 buys little and risks filling the quota.
 
 The code below is generated from the repository by `tools/make_colab_notebook.py`. Do not edit it
 here -- edit the repository and regenerate, or the net you train stops matching the net the engine
@@ -104,6 +120,8 @@ Verbatim copies of the repository modules. `numba` and `torch` are preinstalled 
 from google.colab import drive
 from pathlib import Path
 
+from training.dataset import RECORD_SIZE
+
 drive.mount('/content/drive')
 
 shards = Path({DRIVE_SHARDS!r})
@@ -111,9 +129,12 @@ nets = Path({DRIVE_NETS!r})
 nets.mkdir(parents=True, exist_ok=True)
 
 files = sorted(shards.glob('shard*.bin'))
-total = sum(path.stat().st_size for path in files)
-print(f"{{len(files)}} shards, {{total / 1e9:.2f}} GB, about {{total // 28:,}} positions")
 assert files, f"no shard*.bin in {{shards}} -- upload some first"
+
+total = sum(path.stat().st_size for path in files)
+positions = total // RECORD_SIZE
+print(f"{{len(files)}} shards, {{total / 1e9:.2f}} GB, {{positions:,}} positions")
+print(f"60,000 steps x 16,384 = {{60000 * 16384 / positions:.1f}} epochs over this data")
 """
             ),
             markdown(
@@ -144,8 +165,12 @@ an hour on the real run rather than after.
 ## 5. The real run
 
 Checkpoints every 5,000 steps straight to Drive, so a reclaimed session costs the steps since the
-last checkpoint rather than the whole run. `--steps 60000` is about 2.8 passes over 354M records at
-the full dataset; scale it down in proportion if you uploaded fewer shards.
+last checkpoint rather than the whole run.
+
+Leave `--steps 60000` alone whatever you uploaded. It is the total number of *samples* the
+optimiser sees that matters, and 60,000 x 16,384 = 983M is the schedule the cosine learning-rate
+decay is built around -- cutting it short leaves the run stranded at a high learning rate. On 32
+shards that is 5.2 epochs, which is a normal number of passes for a net this small.
 """
             ),
             code(
