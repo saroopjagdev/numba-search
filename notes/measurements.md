@@ -704,3 +704,44 @@ shards end to end, so the cache fills and the OS reports it as in use. It is rec
 run is not at risk from it. Worth writing down because the alarming number and the harmless cause
 look identical from the top-line figure -- the same shape of mistake as the contended init
 timings.
+
+## 5 Sep — the laptop slept, and where a training step actually goes
+
+**The overnight run did not run overnight.** Step 4,600 landed at 00:24, the machine suspended, and
+step 4,800 did not appear until 12:19 -- **11.5 hours lost**, with nothing crashed and nothing
+corrupted. System sleep is now suppressed with `SetThreadExecutionState(ES_SYSTEM_REQUIRED)` from
+a background process, which is per-process and reverts on exit, so it cannot leave the power
+settings changed behind us. It also only lasts as long as that process.
+
+Throughput after the resume is **~14,700 pos/s against 27,000 before**, stable over three sample
+windows, which pushes the local finish to about 06:00 on 6 Sep. Most likely a power profile the
+machine adopted on resume rather than anything in the code.
+
+### The profile that decides which machine to train on
+
+The question is not "is a GPU faster" but "how much of a step can a GPU touch". Batch 16,384,
+averaged over three steps, measured against the live job so absolute figures are inflated -- the
+proportions are the point:
+
+| stage | time | share |
+|---|---|---|
+| read + decode (CPU, numba) | 17.8 ms | 1.1% |
+| build tensors | 6.9 ms | 0.4% |
+| **forward + backward + optimiser** | **1630.1 ms** | **98.5%** |
+
+**The CPU-only floor is 24.7 ms/step, i.e. ~664,000 pos/s**, which is what we would get if a GPU
+made the arithmetic free. Against a local step that is a 67x ceiling.
+
+Two consequences, and the second reverses an assumption I had been carrying:
+
+- **vCPU count is irrelevant.** The decode is a single serial thread of about 18 ms. Free Colab's
+  two vCPUs are not a constraint, so "the laptop has more cores than a free instance" -- the
+  reason I had been treating free Colab as possibly *slower* -- is simply wrong.
+- **A better GPU than a T4 is not worth paying for.** A T4 should land somewhere in the low
+  hundreds of thousands of pos/s, already within reach of the 664k data-loader floor. Anything
+  faster is spending money on the 1.5% we cannot remove. If we ever do pay, the thing to buy is
+  *session reliability* across the four width runs, not FLOPS.
+
+The honest process note: the plan said to train on Colab and listed it under "needs the user", and
+a ten-hour local run was started anyway without ever putting that request in front of them. The
+sleep did not cause that; it only exposed it.

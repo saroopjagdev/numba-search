@@ -120,10 +120,15 @@ assert files, f"no shard*.bin in {{shards}} -- upload some first"
                 """
 ## 4. Throughput probe -- run this before committing to a long run
 
-400 steps, purely to answer "is the GPU actually faster than the laptop?". The laptop does about
-27,000 positions/second warm. If this comes back in the same range, the pipeline is bound by
-record decoding on Colab's two vCPUs rather than by the matmul, and the GPU is not buying anything
--- stop here rather than spend hours finding that out.
+400 steps, to check the GPU is doing what the profile says it should. Measured on the laptop, a
+step at batch 16,384 is **98.5% forward/backward** and only 24.7 ms of CPU work -- read, decode and
+tensor construction. So the CPU floor is about **664,000 pos/s** and everything below that is the
+GPU's to win. Two vCPUs are not a constraint: the decode is a single serial thread of about 18 ms,
+so core *count* is irrelevant here.
+
+Expect comfortably over 100,000 pos/s. Under about 50,000 means something is wrong -- no GPU
+actually attached, or Drive I/O throttling the shard reads -- and is worth fixing before spending
+an hour on the real run rather than after.
 """
             ),
             code(
