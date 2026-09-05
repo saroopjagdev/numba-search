@@ -831,3 +831,68 @@ still ahead. Nothing to fix.
 
 The lesson is about the instrument rather than the net: **a 200-step print interval is below the
 noise floor of this loss.** Judge training curves from windowed means, not from the last few lines.
+
+## 5 Sep -- post-mortem of the first rated loss, round 22 vs LehmanBro
+
+First loss on the ladder. Sicilian Sveshnikov, we had White, mated on move 37. The log's headline
+numbers point one way and the analysis points somewhere else entirely, which is why this is written
+down rather than acted on from impression.
+
+**What the log says.** 29 moves, 59.6 s used out of roughly 134.5 s available, **74.9 s still on the
+clock at checkmate** -- we banked 56% of our time and got mated. Slowest move of the entire game
+4.0 s, average 2.1 s, in a position with opposite-side attacks. Init 19.6 s of the 90 s budget,
+comfortable.
+
+That looks conclusive: underspend the clock, get outplayed. It is wrong.
+
+**Fixed-depth analysis of the four moves where the game turned.** Fixed depth rather than fixed
+time deliberately -- preprocessing was saturating the cores, so timings would have been
+contaminated, whereas the move chosen at a given depth is deterministic.
+
+| position | we played | d4 | d6 | d8 | d10 | d12 |
+|---|---|---|---|---|---|---|
+| move 21 | Rb3 | Rb3 | Rb3 | Rb3 | Rb3 | Rb3 |
+| move 22 | h3 | c5 | c5 | c5 | **h3** | Rg1 |
+| move 23 | c5 | **c5** | Rb4 | Bg5 | **c5** | **c5** |
+| move 24 | g3 | Kg1 | **g3** | **g3** | **g3** | **g3** |
+
+**Depth 12 still plays our moves**, and we were reaching perhaps depth 7-8 in the 2 s we spent. The
+extra time we failed to spend would have bought a ply or two and changed nothing: the moves it
+would have found are the moves we played.
+
+**What the evaluation thought, fixed depth 10, White's own view:**
+
+| move | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 31 | 32 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| eval, cp | -48 | -71 | -102 | -82 | -79 | -190 | -239 | **-1011** | -1159 | -1655 | mate |
+
+At move 24 the engine assessed a position four moves from objectively resigned at **-0.79 pawns**.
+The collapse from -239 to -1011 happens at move 27, by which point the game is already gone. The
+disaster was invisible until it was unavoidable, and no affordable amount of extra search reaches a
+horizon the evaluation never warns us to look at.
+
+**This is an evaluation failure, not a time-management failure.** The hand-crafted eval's only king
+term is `KING_ATTACK_WEIGHT`, which counts slider and knight attacks landing in the ring around the
+king and **caps at 140 cp**. There is no pawn-shield term, no open-file-toward-the-king term, and
+no penalty for a king that has walked to f2/e2/g1 behind a structure that no longer exists -- ours
+had traded the f-pawn on move 19 and then sat on the open file. A term that saturates at 1.4 pawns
+is structurally incapable of expressing "this king is getting mated", so the search had no reason
+to avoid it.
+
+**Consequences for the plan:**
+
+- **The NNUE is the fix, and this is direct evidence for it.** A 768-input net evaluates king
+  safety implicitly from the board rather than through a hand-written proxy that saturates. This is
+  the single strongest argument yet for the architecture already locked in, and it arrived from a
+  game rather than from a paper.
+- **Do not hand-tune the HCE king safety now.** It is a band-aid on a component we intend to
+  replace, and it would need SPRT to validate on a machine that is currently busy. It moves to
+  first-thing-to-fix *if* the net fails its SPRT gate -- and the post-mortem above says exactly
+  what to fix, so that work is now cheap to start.
+- **The clock underspend is still real and still worth fixing**, but it must be sold honestly: it
+  is free Elo in games decided by depth, and this game was not one of them. `ASSUMED_MOVES_LEFT`
+  is a fixed 30 and never adapts, so with 91 s left the budget was 2.9 s and iterative deepening
+  then stopped at 2.1 s. Fixing it does not change this loss.
+
+The general lesson, and the reason for the table: **the obvious number in the log was not the
+cause.** 74.9 s unused is a genuine defect that had nothing to do with why we lost.
