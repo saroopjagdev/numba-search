@@ -1107,3 +1107,31 @@ measurement. The SPRT remains the gate and is still blocked on memory, so the wi
 a proxy for eval quality plus a real measurement of speed, not on games.
 
 128 stays the named fallback if init-budget or speed pressure later forces a cut.
+
+## 5 Sep -- the init "regression" was contention, not creep
+
+Earlier today `import agent` from the extracted zip took 69.6-72.5s against the 75s cap, and lost a
+packaging verification game on `init`. That was logged as JIT creep and treated as a ship blocker.
+
+Re-measured on a quiet machine, same code, same script:
+
+    engine.search   20.8s
+    engine.position  4.1s
+    engine.bitboard  2.7s
+    engine.nnue      2.5s
+    engine.eval      1.4s
+    agent warm-up    0.1s
+    TOTAL           31.7s      target 60s / cap 75s / hard limit 90s
+
+31.7s against 30-34s on 4 Sep. There is no creep. The 69.6s was the same machine contention that
+produced the two discarded `net_speed.py` results, and the lost verification game was a casualty of
+the measurement environment rather than of the build.
+
+The lesson is now recorded twice in one day and worth stating once plainly: **on this box, any
+wall-clock number taken while something else is running is worthless.** Three separate conclusions
+today were wrong for that single reason -- 1024 faster than 128, 512 an outlier, and a JIT
+regression that never happened. Wall-clock measurements get a quiet machine or they do not get
+believed.
+
+Init headroom is therefore comfortable, not marginal: 31.7s of a 90s allowance, with `engine.search`
+at 66% of it as the thing to watch.
