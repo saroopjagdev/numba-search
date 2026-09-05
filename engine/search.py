@@ -352,6 +352,17 @@ def quiescence(
     " uint64[:], int32[:], int32[:], int16[:], int8[:], int32[:, :], int32[:, :], uint64[:],"
     " uint64[:], int64, int64, int64, int32, int32, boolean, boolean, int64[:])",
     cache=False,
+    # Releases the GIL for the whole call, which is what makes pondering possible: the main thread
+    # has to be able to run Python -- to accept the next `get_move` and stop us -- while a ponder
+    # thread is inside this function. Without it the ponder thread would hold the interpreter for
+    # the entire search and the agent would simply stop responding.
+    #
+    # Only the outermost dispatcher needs this. `quiescence` and the movegen helpers are called
+    # from compiled code, never from Python, so they never take the GIL in the first place.
+    #
+    # Nothing here is made thread-safe by it. Two searches must not share mutable state, and the
+    # only thing they do share is the transposition table -- see `Searcher.__init__`.
+    nogil=True,
 )
 def negamax(
     bb: np.ndarray,
@@ -663,19 +674,39 @@ class Searcher:
     ever happens mid-search.
     """
 
-    def __init__(self, tt_bits: int = TT_BITS) -> None:
+    def __init__(self, tt_bits: int = TT_BITS, share: "Searcher | None" = None) -> None:
+        """Allocate a searcher. `share` makes this a second searcher onto the same table.
+
+        Pondering needs two searchers, because a search owns mutable scratch -- the board, the move
+        buffers, the accumulator stack, the abort cell -- and two searches running over one set of
+        those would corrupt each other immediately. What they must share is the transposition
+        table, since filling it on the opponent's clock is the entire point of pondering.
+
+        The table is shared without locking. That is safe here only because of how a stored move is
+        used: `_score_moves` compares it against moves the generator has already produced, so an
+        entry torn by a concurrent write matches nothing and costs a little move ordering. It can
+        never introduce a move that was not legally generated. A torn *score* is possible and can
+        cost a cutoff; that is the same trade lazy-SMP engines make, and it is bounded by the fact
+        that the root move never comes from the table (see `new_search_state`).
+
+        The network is shared too, and unconditionally safe: it is read-only after loading.
+        """
         self.bb, self.mailbox, self.state, self.key = new_position()
         self.undo, self.keys = new_undo()
         self.moves = np.zeros(MAX_MOVES * MAX_PLY, dtype=np.int32)
         self.scores = np.zeros(MAX_MOVES * MAX_PLY, dtype=np.int32)
-        self.tt = new_tt(tt_bits)
+        # A second searcher must not allocate a second 40 MB table, and would defeat its own
+        # purpose by filling one nobody reads.
+        # Annotated because `share` is a `Searcher`, so reading `share.tt` here is mypy resolving
+        # the very attribute this line defines. The same applies to `network` below.
+        self.tt: TTArrays = share.tt if share is not None else new_tt(tt_bits)
         self.killers, self.history, self.path, self.control = new_search_state()
         # The presence of `weights/nnue.npz` *is* the decision to use the net. Nothing else gates
         # it, because the gate happens earlier: the file only enters the repository once SPRT has
         # said the net beats the hand-crafted evaluation, and until then `Network` hands back a
         # zero net that would score every position as a draw. Defaulting to "on if available" and
         # keeping the file out is safer than defaulting to "off" and forgetting to turn it on.
-        self.network = Network()
+        self.network: Network = share.network if share is not None else Network()
         self.use_nnue = self.network.available
         # One accumulator per ply, plus one: the deepest node still pushes a child before the ply
         # cap turns it back.
@@ -687,6 +718,30 @@ class Searcher:
         # Measured nps, used only to convert remaining time into a node budget. Starts pessimistic
         # so the first move of a game cannot overshoot; one iteration replaces it with the truth.
         self.nps = 200_000.0
+        # Set by `stop()` from another thread to end a ponder search early. See `stop()` for why
+        # this is a plain Python attribute and not a cell the compiled code polls.
+        self._stop = False
+
+    def stop(self) -> None:
+        """Ask an in-flight search to abort. Safe to call from another thread.
+
+        The compiled search already aborts when its node count passes `control[1]`, so driving that
+        cell negative ends the current depth within a node or two -- no extra check in the hot path,
+        which matters because the hot path runs a few hundred thousand times a second and pondering
+        does not.
+
+        The ordering is what makes this race-free, and it only works in this order. `_stop` is set
+        *first*; `_iterate` re-asserts the abort after it writes its own budget, so an interleaving
+        that loses this write to `control[1]` still leaves `_stop` visible to the check that
+        follows it. Both threads hold the GIL for every Python-level access here -- the ponder
+        thread gives it up only inside `negamax` -- so there is no visibility question to answer.
+        """
+        self._stop = True
+        self.control[1] = -1
+
+    def resume(self) -> None:
+        """Clear a previous `stop()` so this searcher can be used again."""
+        self._stop = False
 
     def set_position(self, fen: str) -> None:
         set_fen(self.bb, self.mailbox, self.state, self.key, fen)
@@ -718,6 +773,11 @@ class Searcher:
         self.control[1] = budget
         self.control[2] = 0
         self.control[3] = 0
+        # Re-assert an abort that `stop()` may have raised while we were setting up. Without this
+        # the line above would quietly restore a full budget to a search that has been cancelled,
+        # and the depth would run to completion on the opponent's move.
+        if self._stop:
+            self.control[1] = -1
         # The last entry in game_keys is the root itself, and the search reaches the root through
         # `path`, so it is handed only the positions strictly before it.
         history_count = max(0, self.game_count - 1)
@@ -785,6 +845,8 @@ class Searcher:
         depth = 1
         last_nodes = 0
         while depth <= max_depth:
+            if self._stop:
+                break
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 break
