@@ -1,0 +1,152 @@
+"""Find magic multipliers for rook and bishop attack lookup, and write engine/magics.py.
+
+Run offline, once. The constants it emits are our own output, and embedding them means the engine
+pays no search cost at init — it only has to fill the attack table, which is a few milliseconds of
+jitted ray-walking.
+
+    uv run python tools/gen_magics.py
+
+A magic for a square is a multiplier that maps every occupancy subset of that square's relevant
+mask onto a distinct index, or onto an index whose stored attack set is identical. The search is
+brute force over sparse random candidates; validation is exact, so a bad magic cannot survive.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+
+U64 = np.uint64
+FULL = U64(0xFFFF_FFFF_FFFF_FFFF)
+
+ROOK_DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+BISHOP_DIRS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+
+OUTPUT = Path(__file__).resolve().parent.parent / "engine" / "magics.py"
+
+
+def ray_attacks(square: int, occupancy: int, directions: tuple[tuple[int, int], ...]) -> int:
+    """Attacks from `square` given `occupancy`, stopping on (and including) the first blocker."""
+    attacks = 0
+    file, rank = square & 7, square >> 3
+    for file_step, rank_step in directions:
+        f, r = file + file_step, rank + rank_step
+        while 0 <= f < 8 and 0 <= r < 8:
+            target = r * 8 + f
+            attacks |= 1 << target
+            if occupancy >> target & 1:
+                break
+            f += file_step
+            r += rank_step
+    return attacks
+
+
+def relevant_mask(square: int, directions: tuple[tuple[int, int], ...]) -> int:
+    """The squares whose occupancy matters: the ray, minus the edge square that ends it.
+
+    A blocker on the board edge cannot block anything beyond itself, so it carries no information
+    and is excluded. That is what keeps rook tables at 4096 entries instead of 16384.
+    """
+    mask = 0
+    file, rank = square & 7, square >> 3
+    for file_step, rank_step in directions:
+        f, r = file + file_step, rank + rank_step
+        while 0 <= f < 8 and 0 <= r < 8:
+            nf, nr = f + file_step, r + rank_step
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                mask |= 1 << (r * 8 + f)
+            f, r = nf, nr
+    return mask
+
+
+def subsets_of(mask: int) -> list[int]:
+    """Every subset of the set bits of `mask`, by the carry-rippler trick."""
+    out = []
+    subset = 0
+    while True:
+        out.append(subset)
+        subset = (subset - mask) & mask
+        if subset == 0:
+            break
+    return out
+
+
+def find_magic(
+    square: int, directions: tuple[tuple[int, int], ...], rng: np.random.Generator
+) -> tuple[int, int]:
+    """Return (magic, index_bits) for one square. Exact validation, so failure is impossible."""
+    mask = relevant_mask(square, directions)
+    bits = int(bin(mask).count("1"))
+    subsets = np.array(subsets_of(mask), dtype=U64)
+    attacks = np.array([ray_attacks(square, int(s), directions) for s in subsets], dtype=U64)
+    shift = U64(64 - bits)
+
+    # One reusable scratch buffer. It never needs clearing between trials: we write every index
+    # we are about to read, so a stale value from an earlier candidate can never be observed.
+    table = np.empty(1 << bits, dtype=U64)
+    # Draw candidates in blocks — the per-call RNG overhead dominates otherwise.
+    block = 4096
+
+    with np.errstate(over="ignore"):
+        for _ in range(100_000):
+            # sparse candidates: three ANDed randoms give few set bits, which is what works
+            draws = rng.integers(0, 1 << 64, size=(3, block), dtype=np.uint64)
+            candidates = draws[0] & draws[1] & draws[2]
+            # cheap reject: a good magic spreads the top byte of mask * magic
+            spread = np.bitwise_count((U64(mask) * candidates) >> U64(56))
+            for candidate in candidates[spread >= 6]:
+                index = ((subsets * candidate) >> shift).astype(np.int64)
+                table[index] = attacks
+                if np.array_equal(table[index], attacks):
+                    return int(candidate), bits
+    raise RuntimeError(f"no magic found for square {square}")
+
+
+def main() -> None:
+    rng = np.random.default_rng(0xC0FFEE)
+    results: dict[str, tuple[list[int], list[int]]] = {}
+    for name, directions in (("ROOK", ROOK_DIRS), ("BISHOP", BISHOP_DIRS)):
+        magics, bits = [], []
+        for square in range(64):
+            magic, bit_count = find_magic(square, directions, rng)
+            magics.append(magic)
+            bits.append(bit_count)
+            label = name.lower()
+            print(f"  {label:7} {square:2d} {bit_count:2d} bits 0x{magic:016X}", flush=True)
+        results[name] = (magics, bits)
+        print(f"  {name.lower()} table entries: {sum(1 << b for b in bits):,}\n")
+
+    lines = [
+        '"""Magic multipliers for sliding-piece attack lookup.',
+        "",
+        "Generated by tools/gen_magics.py with seed 0xC0FFEE. Our own output, not imported from",
+        "anywhere. Regenerate rather than hand-edit; every value is validated exactly at",
+        "generation time, and engine/bitboard.py re-verifies the built tables against a",
+        "reference ray-walker at import.",
+        '"""',
+        "",
+    ]
+    for name in ("ROOK", "BISHOP"):
+        magics, bits = results[name]
+        lines.append(f"{name}_MAGICS: tuple[int, ...] = (")
+        lines.extend(f"    0x{m:016X}," for m in magics)
+        lines.append(")")
+        lines.append("")
+        # The bit counts read as an 8x8 board, which is how you eyeball them for sanity; the
+        # formatter would otherwise put each of the 64 on its own line and destroy that.
+        lines.append("# fmt: off")
+        lines.append(f"{name}_BITS: tuple[int, ...] = (")
+        for start in range(0, 64, 16):
+            lines.append("    " + " ".join(f"{b}," for b in bits[start : start + 16]))
+        lines.append(")")
+        lines.append("# fmt: on")
+        lines.append("")
+
+    OUTPUT.parent.mkdir(exist_ok=True)
+    OUTPUT.write_text("\n".join(lines), encoding="utf-8")
+    print(f"wrote {OUTPUT}")
+
+
+if __name__ == "__main__":
+    main()

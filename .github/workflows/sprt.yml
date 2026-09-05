@@ -1,0 +1,160 @@
+# Fan an SPRT out across CI runners.
+#
+# Locally the arena is capped at one concurrent game: every game is two agent processes at roughly
+# 340 MB each and the dev box has under a gigabyte free. That is ~150s per game, serially, so a
+# decisive run takes hours and a run at the real 120s+0.5s clock takes most of a day. Games are
+# clock-bound rather than CPU-bound -- a faster machine does not finish a game sooner, it searches
+# deeper in the same seconds -- so the only lever that shortens the wall clock is playing more of
+# them at once, and that is precisely what a matrix of runners is.
+#
+# Each shard plays its slice and uploads a tally; `tools/sprt_combine.py` applies the test once to
+# the pooled result. Early stopping is lost within a batch and kept between batches: read the
+# verdict, and dispatch another batch only if it says INCONCLUSIVE.
+name: sprt
+
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: total games across all shards
+        default: "200"
+      shards:
+        description: parallel runners (20 is the free-tier concurrency limit)
+        default: "20"
+      base_ms:
+        description: clock per side; 120000 is the real one
+        default: "30000"
+      increment_ms:
+        description: increment per move; 500 is the real one
+        default: "125"
+      elo0:
+        description: "H0: the candidate is no better"
+        default: "0"
+      elo1:
+        description: "H1: the candidate is better by this much"
+        default: "15"
+      baseline:
+        description: "'no-weights' for net-vs-HCE, or a git ref to play against"
+        default: "no-weights"
+      seed:
+        description: opening-order seed; shards must share it
+        default: "7"
+
+jobs:
+  play:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # a git-ref baseline needs history, not just the tip
+
+      # Before the venv exists, so the copy is the repo and nothing else. Doing this after `uv venv`
+      # would clone a virtualenv into the baseline and, worse, leave `.venv` as a difference the
+      # self-comparison guard below would mistake for a real one.
+      - name: Build the baseline
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.baseline }}" = "no-weights" ]; then
+            # The cleanest A/B available: Network.available is just the file existing, so removing
+            # it gives the hand-crafted-eval build of byte-identical code. Nothing but the net
+            # differs.
+            cp -r . /tmp/baseline
+            rm -rf /tmp/baseline/weights /tmp/baseline/.git
+          else
+            git worktree add /tmp/baseline "${{ inputs.baseline }}"
+          fi
+          test -f /tmp/baseline/agent.py
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # Deliberately not `uv sync`. That pulls torch and onnxruntime, which the shipped agent is
+      # forbidden to import anyway, and paying ~200 MB of download on twenty runners at once would
+      # cost more minutes than the games do.
+      - run: uv venv
+      - run: uv pip install chess==1.11.2 numpy==2.5.2 numba==0.67.0
+
+      - name: Guard against comparing a build with itself
+        run: |
+          set -euo pipefail
+          # A silent no-op comparison returns a tidy "inconclusive" after burning every runner
+          # minute in the budget. Catch it before the games rather than after.
+          if diff -r -q --exclude=.git --exclude=.venv . /tmp/baseline > /tmp/diff.txt 2>&1; then
+            echo "candidate and baseline are identical -- nothing to test"
+            exit 1
+          fi
+          head -20 /tmp/diff.txt
+
+      - name: Play shard ${{ matrix.shard }}
+        run: |
+          uv run --no-project python tools/sprt.py \
+            --candidate . \
+            --baseline /tmp/baseline \
+            --elo0 "${{ inputs.elo0 }}" \
+            --elo1 "${{ inputs.elo1 }}" \
+            --max-games "${{ inputs.games }}" \
+            --base-ms "${{ inputs.base_ms }}" \
+            --increment-ms "${{ inputs.increment_ms }}" \
+            --seed "${{ inputs.seed }}" \
+            --concurrency 1 \
+            --shards "${{ inputs.shards }}" \
+            --shard "${{ matrix.shard }}" \
+            --results-json "shard-${{ matrix.shard }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sprt-shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+
+  verdict:
+    needs: play
+    if: always() # a dead runner costs games, not the verdict; the combiner flags a short field
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv venv
+      - run: uv pip install chess==1.11.2
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: results
+          pattern: sprt-shard-*
+          merge-multiple: true
+
+      - name: Combine
+        run: |
+          set -euo pipefail
+          # The combiner exits 1 on a rejection, which is a real answer and not a broken job.
+          # Capture it, publish it, and only fail the workflow if the tool itself misbehaved.
+          set +e
+          uv run --no-project python tools/sprt_combine.py results/*.json \
+            --elo0 "${{ inputs.elo0 }}" --elo1 "${{ inputs.elo1 }}" | tee verdict.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '```'
+            cat verdict.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$status" -le 2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sprt-verdict
+          path: verdict.txt
