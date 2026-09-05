@@ -1154,7 +1154,7 @@ byte-identical code -- no flag, no branch, no second binary. The workflow's `dif
 the two trees actually differ before spending a runner-minute, so a silent no-op comparison cannot
 masquerade as a tidy inconclusive.
 
-**Throughput: ~4 minutes wall clock against the ~12 hours the local run was tracking.** Not because
+**Throughput: 16.3 minutes wall clock against the ~12 hours the local run was tracking.** Not because
 CI is faster -- games are clock-bound, so a quicker machine searches deeper in the same seconds
 rather than finishing sooner. The only lever is playing more at once, and 20 runners is 20x. The
 dev box is capped at one concurrent game by memory (two agent processes, ~340 MB each, under a
@@ -1165,5 +1165,11 @@ schedule from `--seed`, so a second run at seed 7 replays the same openings rath
 ones, while `sprt_combine.py`'s `MUST_MATCH` refuses to pool across different seeds -- correctly,
 since a different opening order is a different sample. So a follow-up batch is an *independent
 replication*, never extra sample size for the same test. Choose the game count up front. Chasing a
-formal ACCEPT here would have cost ~1000 further runner-minutes to move an LLR of 2.61 to 2.94 on a
-question whose direction is not in doubt.
+formal ACCEPT is not purchasable at all: a second batch cannot move *this* test's LLR, only
+corroborate it, so 2.61 stays 2.61 no matter how much is spent.
+
+**Cost, measured rather than guessed: 283 runner-minutes** across 21 jobs (20 shards at ~11-12 min
+each plus a 12-second verdict), 16.3 minutes wall clock. Call it ~300 with per-job rounding, or
+~15% of a 2000-minute monthly allowance -- roughly 1.5 runner-minutes per game. An SPRT of this size
+is a routine expense, not a special occasion, and the backlog of unmeasured changes should be run
+through it rather than argued about.

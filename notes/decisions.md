@@ -197,11 +197,12 @@ init-budget pressure later forces a cut. See `notes/measurements.md`, 5 Sep.
 made adoption conditional on beating HCE; that condition is met, and by a margin well beyond the
 +15 Elo H1 the test was framed around.
 
-We are not paying for a formal ACCEPT. The batch cannot be extended -- see `notes/measurements.md`
-for why seeds make batches independent rather than cumulative -- so converting 2.61 into 2.94 means
-a fresh ~1000 runner-minutes, roughly the remaining monthly budget, to add a decimal to a conclusion
-that is not in question. That budget is better spent on the search-side changes that still have no
-verdict at all.
+We are not chasing a formal ACCEPT, and not because of cost. The batch cannot be extended -- see
+`notes/measurements.md` for why seeds make batches independent rather than cumulative -- so no
+amount of further play moves *this* test's LLR off 2.61. A second batch would be an independent
+replication of a conclusion that is not in question. The budget is better spent on the search-side
+changes that still have no verdict at all, and at 283 runner-minutes a run there is room for
+several of them.
 
 Consequences:
 - HCE stays in the tree and stays correct. It is the fallback if the net ever fails validation on
@@ -211,6 +212,6 @@ Consequences:
   `use_nnue True` from inside the extracted zip, never from the source tree.
 
 **Corollary decision: SPRT runs in CI from now on, not locally.** The dev box plays one game at a
-time and took ~12 hours for a verdict this run reached in ~4 minutes. Games are clock-bound, so
+time and took ~12 hours for a verdict this run reached in 16 minutes. Games are clock-bound, so
 parallelism is the only lever that exists. Local runs are for smoke tests; verdicts come from
 `.github/workflows/sprt.yml`.
