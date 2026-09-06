@@ -110,6 +110,22 @@ PIECE_VALUES = np.array([100, 320, 330, 500, 950, 10000], dtype=np.int32)
 # lengthen a line indefinitely when checks keep coming, and every buffer here is indexed by ply
 # with no bounds checking inside nopython code -- so an unbounded line does not raise, it
 # segfaults. The headroom below MAX_PLY covers the quiescence tail that hangs off the deepest node.
+# How much worse than equality a draw is, to us, in centipawns. Zero says we are indifferent
+# between a draw and a level game, and across rated rounds 15-39 we are 16-5-5 with every one of the
+# five draws arising from an equal position -- against a field we beat in 16 of 21 decisive games,
+# indifference is the wrong price. A repetition we could have declined is a half point handed to a
+# weaker opponent.
+#
+# Deliberately small. Contempt is a bet that we are stronger than whoever is across the board, and
+# it is paid for in the games where we are not: an engine that refuses a repetition when it is
+# genuinely worse converts draws into losses. 25 cp is under a third of a pawn, enough to decline a
+# repetition that is otherwise a coin-flip and not enough to decline a lifeline.
+#
+# This applies only where the search *knows* it is a draw -- repetition and the fifty-move rule. It
+# does not touch positions that are merely dead level, which the network scores near zero on its
+# own, so it cannot stop us liquidating into a drawn ending. That is a different problem.
+CONTEMPT = 25
+
 MAX_SEARCH_PLY = 120
 
 TT_BITS = 22  # 4M entries, ~40 MB across the five arrays
@@ -588,7 +604,12 @@ def negamax(
         # Draw by repetition or the fifty-move rule. Checked before anything else so a repetition
         # is never masked by a transposition table hit from a different path.
         if _is_repetition(path, state, key, ply, game_keys, game_count) or state[HALFMOVE] >= 100:
-            return I32(0)
+            # Scored from the mover's point of view, like everything else the search returns, so
+            # the sign has to follow whose turn it is. Ply parity gives that without threading a
+            # twenty-eighth argument through the recursive calls: every recursion increments `ply`
+            # and flips `state[STM]` together -- including the null move, which is the one that
+            # would break this if it did not -- so an even ply is always our turn.
+            return I32(-CONTEMPT) if (ply & 1) == 0 else I32(CONTEMPT)
         # Mate-distance pruning: if we already have a mate at this ply, a longer one cannot help.
         alpha = max(alpha, I32(-MATE + ply))
         beta = min(beta, I32(MATE - ply - 1))
