@@ -1265,3 +1265,32 @@ takes files rather than logic embedded in the workflow.
 
 **CI is now blocked until the limit is raised.** That is the constraint on everything below, not a
 shortage of things worth testing.
+
+## 6 Sep -- shallow pruning, measured: no effect, not shipped
+
+    SPRT  H0: +0 Elo   H1: +15 Elo   30s + 0.12s
+          sprt-shallow-pruning vs dc81416
+          20 of 20 shards reported, 400 games pooled
+
+      INCONCLUSIVE  +87 =216 -97   LLR -1.75  in [-2.94, 2.94]
+      Elo -8.7 +- 23.1
+
+Run 34015926505, seed 17. Late move pruning at depth <= 4 plus bad-capture pruning at depth <= 2,
+the pair written as `89932d9` and held out of the shipping tip by `874968f` precisely because
+nothing had measured them. This is the measurement, and the answer is no.
+
+Not run again with more games. The point estimate is *below* zero and the LLR is walking towards
+the rejection boundary rather than away from it, so a second batch would be buying resolution on a
+change that shows no sign of being positive. The prior evidence agrees: four builds -- base, LMP
+only, bad-capture only, both -- all reached total completed depth 66 across six positions at a 1s
+budget, so the pruning was not converting into depth either.
+
+Worth recording *why* it fails, because the shape is not obvious. Both rules are conditioned on
+move ordering being trustworthy, and ordering here is already strong -- TT move, then SEE-filtered
+winning captures, then killers and history. Pruning late moves buys little when the good move is
+almost always early anyway, and it costs a full point whenever the ordering is wrong. That is the
+same reason the SEE change was worth +44: improving the ordering pays, and betting harder on
+ordering that is already good does not.
+
+The branch stays pushed as `sprt-shallow-pruning` so the result is reproducible, and the shipping
+tip is unchanged.
