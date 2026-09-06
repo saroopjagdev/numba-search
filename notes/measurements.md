@@ -1220,3 +1220,48 @@ LLR of 2.61 against a 2.94 bound, and an inconclusive run buys nothing at any pr
 Note also how much of the cost is *not* chess: each game pays JIT twice, roughly 20 seconds per
 agent, against 60-75 seconds of actual clock. Close to a third of every runner-minute is numba
 compiling, and it is spent again on every one of the 400 games.
+
+## 6 Sep -- static exchange evaluation, measured: +44 Elo
+
+Commits `3d09f9c` (quiescence) and `db9d1b1` (move ordering), tested together. Run 34001356764,
+400 games at 30s+0.125s across 20 shards, candidate `db9d1b1` against baseline `e7e2a1b` -- the
+pondering commit, so this isolates SEE from the +63 measured above it.
+
+```
+ACCEPTED  +120 =210 -70   LLR +3.89  in [-2.94, 2.94]
+Elo +43.7 +- 23.5
+```
+
+The two halves shipped as one test on purpose. They are the same idea applied in two places -- stop
+paying a subtree to discover what a swap-off answers directly -- and separating them would have
+halved the effect size against an unchanged +-24 error bar, which is how a real gain gets recorded
+as inconclusive. The trade is that the split between them is unknown.
+
+**Quiescence** declines captures that lose material outright. **Ordering** stops putting the rest of
+them ahead of the killers: `SCORE_BAD_CAPTURE` had been declared since the ordering was first
+written and never used, because until `see_ge` existed there was nothing to decide it with. Neither
+prunes a losing capture from the main search -- it is demoted, not discarded, since it can still be
+the only way out of a fork.
+
+`see_ge` is the threshold formulation rather than the gain-array one, because it runs on every
+capture in quiescence and the array version wants a scratch buffer per call. In ordering it is not
+even asked about every capture: a victim worth at least as much as its attacker cannot lose material
+outright, so only the ambiguous ones pay.
+
+Verified by `tools/verify_see.py` against an independent recursive swap-off built on python-chess
+`board.attackers` -- deliberately not a port of the same algorithm, since two copies of one idea
+share its bugs. 7,812 (move, threshold) pairs over 300 random middlegames, zero disagreements. Both
+implementations ignore pins by design, so a disagreement would have been a real bug rather than a
+modelling difference. Init unchanged at 18.1s; perft still exact.
+
+### The verdict job did not run, and the shards were combined by hand
+
+GitHub refused to start it: *"The job was not started because recent account payments have failed or
+spending limit needs to be increased."* The Actions spending limit was reached partway through this
+run. All 20 play shards had already completed and uploaded their tallies, so nothing was lost --
+`gh run download --pattern 'sprt-shard-*'` plus `tools/sprt_combine.py` locally produces the same
+verdict the job would have printed, which is precisely why the combiner is a separate script that
+takes files rather than logic embedded in the workflow.
+
+**CI is now blocked until the limit is raised.** That is the constraint on everything below, not a
+shortage of things worth testing.
