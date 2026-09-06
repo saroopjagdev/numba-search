@@ -1746,3 +1746,47 @@ positions are filtered to |base| < 400 cp.
 
 A rook correction in the eval is the narrow, testable form of this: the rook is the outlier, and the
 exchange is the failure mode we can actually see in a game. Untested as yet.
+
+
+## 2026-09-06 -- RETRACTED: the rook finding above is wrong, the probe was confounded
+
+The section immediately above concludes that the net prices a rook at 3.97 pawns and undervalues the
+exchange at ~105 cp. **That conclusion does not survive a sounder measurement and is withdrawn.**
+
+The defect is in the instrument. Removing a piece and re-searching does not measure that piece's
+material value; it measures material *plus the activity the piece was providing*. In the positions
+sampled -- random playouts at move 14-28 and openings at move 9-12 -- rooks are undeveloped and
+doing very little, so a low number is exactly what a correct evaluation should produce. The
+"pawn and queen calibrate correctly" argument does not rescue it, because pawn and queen values are
+far less position-dependent than rook value. That is a confound, not noise, and no sample size fixes
+it.
+
+The clean version swaps a black rook for a black knight **on the same square**. Nothing is removed,
+the square stays occupied and defended, and the only thing that changes is rook-ness versus
+knight-ness. Run over 20 positions drawn from our own rated games -- balanced by construction, and
+the actual distribution the engine faces -- at 2.5 s per search:
+
+      black rook -> knight, same square:   +213 +- 40 cp     [classical ~180]
+
+**The engine's exchange value is correct**, if anything slightly high. The retracted figure of 105 is
+2.7 se away from this and is an artefact.
+
+The same swap for a bishop gave +68 +- 106 with sd 474. That is not a measurement of anything --
+bishop value depends enormously on which square it lands on -- and no conclusion is drawn from it.
+In particular the earlier claim that the net "thinks a bishop is nearly a rook" is withdrawn too.
+
+### What this leaves
+
+Round 40 has **no established systematic cause**. It was lost with 23.1 s on the clock, so not a
+clock fault, and the engine did score 12...Rxf3 at +22 cp at depth 14 -- but with the exchange
+priced correctly, that is a positional misjudgement in one position, or simply a sacrifice that did
+not work, and one game is not evidence of a bias. No eval change is justified by it. **No rook
+correction was built, and none should be.**
+
+### The lesson, which is the second time this week
+
+An earlier entry in this file records running three experiments against a defect whose magnitude was
+never measured. This is the same error one level down: a measurement was taken, believed, written up
+and committed before its instrument was checked against an obvious alternative explanation. The
+check cost one run. The rule that would have caught both: **before acting on a number, name the
+result that would appear if the instrument were lying, and go and look for it.**
