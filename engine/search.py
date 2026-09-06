@@ -153,59 +153,6 @@ def _mvv_lva(mailbox: np.ndarray, move: np.int32) -> np.int32:
     return I32(PIECE_VALUES[victim] * I32(16) - PIECE_VALUES[attacker] // I32(16))
 
 
-@njit(
-    "void(int8[:], int32[:], int32[:], int64, int64, int32, int32[:, :], int32[:, :], int64)",
-    cache=False,
-)
-def _score_moves(
-    mailbox: np.ndarray,
-    moves: np.ndarray,
-    scores: np.ndarray,
-    offset: Int,
-    count: Int,
-    tt_move: np.int32,
-    killers: np.ndarray,
-    history: np.ndarray,
-    ply: Int,
-) -> None:
-    """Assign an ordering score to each move. Sorting happens lazily, one pick at a time."""
-    for index in range(count):
-        move = moves[offset + index]
-        if move == tt_move:
-            scores[offset + index] = I32(SCORE_TT)
-        elif move_flag(move) & CAPTURE_BIT:
-            scores[offset + index] = I32(SCORE_GOOD_CAPTURE) + _mvv_lva(mailbox, move)
-        elif move_flag(move) & PROMO_BIT:
-            scores[offset + index] = I32(SCORE_GOOD_CAPTURE) + PIECE_VALUES[move_flag(move) & 3]
-        elif move == killers[ply, 0]:
-            scores[offset + index] = I32(SCORE_KILLER_1)
-        elif move == killers[ply, 1]:
-            scores[offset + index] = I32(SCORE_KILLER_2)
-        else:
-            scores[offset + index] = history[mailbox[move_from(move)], move_to(move)]
-
-
-@njit("int64(int32[:], int32[:], int64, int64, int64)", cache=False)
-def _pick_best(moves: np.ndarray, scores: np.ndarray, offset: Int, count: Int, start: Int) -> Int:
-    """Selection sort, one step at a time.
-
-    Sorting the whole list up front wastes work: most nodes cut after two or three moves, so the
-    remaining scores are never looked at. This swaps the best remaining move into position and
-    returns, which costs O(n) per move actually tried rather than O(n log n) per node.
-    """
-    best = start
-    for index in range(start + 1, count):
-        if scores[offset + index] > scores[offset + best]:
-            best = index
-    if best != start:
-        moves[offset + start], moves[offset + best] = moves[offset + best], moves[offset + start]
-        scores[offset + start], scores[offset + best] = (
-            scores[offset + best],
-            scores[offset + start],
-        )
-    return start
-
-
 @njit("uint64(uint64[:], int64, uint64)", cache=False)
 def _attackers_to(bb: np.ndarray, square: Int, occ: U64) -> U64:
     """Every piece of either colour attacking `square`, under the given occupancy.
@@ -330,6 +277,88 @@ def see_ge(
         break
 
     return result != 0
+
+
+@njit(
+    "void(uint64[:], int8[:], int64[:], int32[:], int32[:], int64, int64, int32, int32[:, :],"
+    " int32[:, :], int64)",
+    cache=False,
+)
+def _score_moves(
+    bb: np.ndarray,
+    mailbox: np.ndarray,
+    state: np.ndarray,
+    moves: np.ndarray,
+    scores: np.ndarray,
+    offset: Int,
+    count: Int,
+    tt_move: np.int32,
+    killers: np.ndarray,
+    history: np.ndarray,
+    ply: Int,
+) -> None:
+    """Assign an ordering score to each move. Sorting happens lazily, one pick at a time.
+
+    Captures split into winning and losing by the swap-off rather than all sitting above the
+    killers. MVV-LVA sorts captures by what they *win* and is silent about what they cost, so
+    before this the first move tried at a node was routinely a queen grabbing a defended pawn --
+    a whole subtree spent proving what `see_ge` answers in a few dozen instructions.
+
+    The swap-off is not asked about every capture. When the victim is worth at least as much as
+    the attacker the capture cannot lose material outright, which covers most of them; only the
+    ambiguous ones pay for a SEE call. En passant and promotions skip it for the same reason
+    quiescence does -- the swap-off assumes a stationary victim and a fixed attacker value.
+    """
+    for index in range(count):
+        move = moves[offset + index]
+        if move == tt_move:
+            scores[offset + index] = I32(SCORE_TT)
+        elif move_flag(move) & CAPTURE_BIT:
+            base = I32(SCORE_GOOD_CAPTURE) + _mvv_lva(mailbox, move)
+            attacker = I32(mailbox[move_from(move)]) % I32(6)
+            target = mailbox[move_to(move)]
+            ambiguous = (
+                move_flag(move) != EP_CAPTURE
+                and not (move_flag(move) & PROMO_BIT)
+                and target != EMPTY
+                and PIECE_VALUES[I32(target) % I32(6)] < PIECE_VALUES[attacker]
+            )
+            if ambiguous and not see_ge(bb, mailbox, state, move, I32(0)):
+                # Demoted below the killers, not discarded. A losing capture is still sometimes
+                # the move -- it can be the only way out of a fork, or a sacrifice the search
+                # needs to see -- so it is tried last rather than pruned here.
+                scores[offset + index] = I32(SCORE_BAD_CAPTURE) + _mvv_lva(mailbox, move)
+            else:
+                scores[offset + index] = base
+        elif move_flag(move) & PROMO_BIT:
+            scores[offset + index] = I32(SCORE_GOOD_CAPTURE) + PIECE_VALUES[move_flag(move) & 3]
+        elif move == killers[ply, 0]:
+            scores[offset + index] = I32(SCORE_KILLER_1)
+        elif move == killers[ply, 1]:
+            scores[offset + index] = I32(SCORE_KILLER_2)
+        else:
+            scores[offset + index] = history[mailbox[move_from(move)], move_to(move)]
+
+
+@njit("int64(int32[:], int32[:], int64, int64, int64)", cache=False)
+def _pick_best(moves: np.ndarray, scores: np.ndarray, offset: Int, count: Int, start: Int) -> Int:
+    """Selection sort, one step at a time.
+
+    Sorting the whole list up front wastes work: most nodes cut after two or three moves, so the
+    remaining scores are never looked at. This swaps the best remaining move into position and
+    returns, which costs O(n) per move actually tried rather than O(n log n) per node.
+    """
+    best = start
+    for index in range(start + 1, count):
+        if scores[offset + index] > scores[offset + best]:
+            best = index
+    if best != start:
+        moves[offset + start], moves[offset + best] = moves[offset + best], moves[offset + start]
+        scores[offset + start], scores[offset + best] = (
+            scores[offset + best],
+            scores[offset + start],
+        )
+    return start
 
 
 @njit("boolean(uint64[:], int64[:], uint64[:], int64, uint64[:], int64)", cache=False)
@@ -661,7 +690,9 @@ def negamax(
 
     offset = ply * MAX_MOVES
     count = generate_moves(bb, mailbox, state, moves, offset)
-    _score_moves(mailbox, moves, scores, offset, count, stored_move, killers, history, ply)
+    _score_moves(
+        bb, mailbox, state, moves, scores, offset, count, stored_move, killers, history, ply
+    )
 
     best_score = I32(-INFINITY)
     best_move = I32(0)
