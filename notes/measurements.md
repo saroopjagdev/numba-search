@@ -1393,3 +1393,43 @@ thinking entirely for the rest of the game. Both games it has played were lost f
 
 Record over those twelve: five wins, five losses, two draws. Every one of the five losses ended with
 serious time unused (19.1, 18.9, 47.1, 57.9, 74.9 s).
+
+## 6 Sep -- the proportional reserve is also rejected, and the reserve was never the variable
+
+    SPRT  H0: +0 Elo   H1: +15 Elo   120s + 0.50s
+          clock-proportional-reserve vs clock-policy-reverted
+          20 of 20 shards reported, 400 games pooled
+
+      REJECTED  +27 =283 -90   LLR -11.55  in [-2.94, 2.94]
+      Elo -55.2 +- 18.1
+
+Run 34019659573, seed 29, at the real time control against the old `usable/30` divisor. The fix for
+round 31 and 32 is 55 Elo *worse* than the policy it was meant to replace.
+
+### What the three measurements say together
+
+                  120s    60s    30s    18s     result vs old divisor
+      old  div30  3717    2017   1167    827    baseline
+      abs  div12  7752    3502   1377    527    -65.9 +- 21.6  (30s control)
+      prop div12  7795    4055   2185   1437    -55.2 +- 18.1  (120s control)
+
+Both rejected policies open the game at ~7.8 s a move; the survivor opens at 3.7 s. The reserve --
+absolute or proportional, 15 s or 12% -- was never what was being tested. `CLOCK_DIVISOR` was, and
+12 loses to 30 by about 60 Elo whichever reserve is wrapped around it. Two experiments that looked
+like different hypotheses were the same one.
+
+### The floor was a symptom, not the disease
+
+Rounds 31 and 32 really did stop thinking at an 18 s clock, and that really did lose both games. The
+error was inferring the fix from the mechanism. Reaching a floor at move 50 is what happens *after*
+spending 7.8 s a move for twenty moves; with the old divisor the clock never falls far enough for
+any floor to bite. Fixing the floor while keeping the spending that caused it addressed the visible
+half and kept the expensive half.
+
+The generalisable claim, and the one to test next: in games of 80-100 moves, an even time profile
+beats a front-loaded one, because a single blunder anywhere loses the game and depth in a quiet
+opening buys almost nothing. Spending 2.1x per move does not buy 2.1x the quality -- it buys twenty
+good moves and sixty bad ones.
+
+`tools/clock_fuzz.py` is kept on the shipping branch even though the commit that introduced it is
+reverted. The instrument is not the change it was written for.
