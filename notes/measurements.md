@@ -1294,3 +1294,63 @@ ordering that is already good does not.
 
 The branch stays pushed as `sprt-shallow-pruning` so the result is reproducible, and the shipping
 tip is unchanged.
+
+## 6 Sep -- the clock reserve, measured: -66 Elo, and it lost a rated game
+
+    SPRT  H0: +0 Elo   H1: +15 Elo   30s + 0.12s
+          worktree-phase0-instruments vs clock-policy-reverted
+          20 of 20 shards reported, 400 games pooled
+
+      REJECTED  +44 =237 -119   LLR -9.69  in [-2.94, 2.94]
+      Elo -65.9 +- 21.6
+
+Run 34017613770, seed 19. Candidate is the shipping tip; the baseline reverts both `ac87200` and
+`a3d1a1c` to restore the old `usable/30` divisor. They were tested as one unit because they
+interact and splitting them would halve the effect against a +-22 error bar.
+
+Read this alongside rated round 31, which is the same fault seen directly rather than statistically.
+
+### What the reserve actually does
+
+An absolute reserve is an absorbing floor, not a safety margin. The budget falls as the clock
+approaches it, and at the crossover where the budget drops below the increment the clock stops
+falling -- the engine then plays at increment speed for the remainder of the game.
+
+With RESERVE_MS = 15000 and a 500 ms increment the crossover is at an 18 s clock:
+
+      clock left   budget     vs 500 ms increment
+        25.0 s     1023 ms    spending down
+        20.0 s      669 ms    barely
+        18.0 s      527 ms    break-even
+        17.4 s      484 ms    below -- the clock rises
+
+Round 31 (lost, checkmate, White) reached it on move 53 of 103. The clock then sat between 17.3 s
+and 18.9 s for fifty consecutive moves at 0.4-0.6 s each, the engine hung a knight with 89. Nxe5 in
+0.6 s, and it was mated holding 18.9 s. The opponent was down to 0.9 s at move 103 and recovered on
+increment. We held a five- to nineteen-fold clock advantage through the entire losing sequence and
+never spent it.
+
+Total consumption was not the problem: 152.6 s of the ~171 s available, 89%. The shape was. Seven
+seconds a move in a quiet King's Indian on moves 1-6, half a second a move in the endgame that
+decided the game.
+
+### Why the 30 s SPRT overstates it, and why the direction still holds
+
+RESERVE_MS is absolute, so at 30 s base the reserve is half the clock and the engine starts the game
+already pinned to its floor. At 120 s it is 12.5% and the floor only bites past move 50. The -65.9
+is therefore an upper bound on the real cost rather than an estimate of it. The sign is not in
+doubt -- round 31 is the fault occurring at the real control -- but the magnitude is not
+transferable, and no absolute reserve can be tuned at a short time control.
+
+### Also measured, and not caused by this change
+
+`tools/clock_fuzz.py` on the fix: consumption averages 109% of the budget handed to `search`, worst
+case 146%. SAFETY = 0.85 is absorbing less than it was meant to. Pre-existing, present in round 31,
+and it does not break the no-flag property below -- it moves the threshold from 2.35 s to 1.6 s.
+Worth its own look if there is time.
+
+### Platform init is 2.5x the local figure
+
+Round 31 reports "Ready in 45.1 s" against 18.1 s measured locally, i.e. 50% of the 90 s allowance
+and not far off the 75 s cap. The local number is not a safe proxy for the platform one. Anything
+added to warm-up should be checked against 45 s, not against 18 s.
