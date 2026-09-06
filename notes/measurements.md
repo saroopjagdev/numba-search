@@ -1694,3 +1694,55 @@ the fifty-move rule, with no contempt anywhere. Across rounds 15-39 we are 16-5-
 came from equal positions -- three by liquidation to insufficient material, two by repetition. A
 draw against this field is worth less to us than a messy equal position, and the code cannot express
 that.
+
+
+## 2026-09-06 -- The net undervalues rooks by 20%, and it cost us round 40
+
+Round 40 (Black vs Team1, English Symmetrical) was lost by checkmate with **23.1 s still on the
+clock**, so nothing here is a time-management fault. The game turned on one move:
+
+      12... Rxf3   rook for knight, from 20+ quiet alternatives, our edge 0 -> -2
+
+We never recovered: -4 by move 21, -13 by move 61, mated on move 64.
+
+Re-searching that position, the engine will not reproduce its own move -- 5 s gives h6, 23 s gives
+Ndb4 -- but the reason it played Rxf3 is not instability. Ranking the candidates with a fresh table
+each, at 8 s:
+
+      Ndb4  +52    Rf5  +35    Rxf3  +22 (depth 14)    h6  +2    Rf7 -148    Kh8 -166
+
+The engine scores giving up the exchange at **+22 cp**. It believes it has full compensation.
+
+### Why: implied piece values
+
+Removing one black piece from a quiet position and re-searching gives the value the net implicitly
+puts on it. Five random quiet positions (|base| < 400 cp), 2 s per search, scores normalised to
+White's point of view:
+
+      P   +84 +-  2        1.00   (classical 1.00)
+      N  +229 +- 22        2.73   (classical 3.20)
+      B  +310 +- 13        3.70   (classical 3.30)
+      R  +333 +- 27        3.97   (classical 5.00)   <-- 20% low
+      Q  +743 +- 41        8.86   (classical 9.00)
+
+**Pawn and queen come out right, which is what makes the rook figure credible** -- a broken probe
+would be wrong everywhere, not on one piece. The net has a bishop at 3.70 and a rook at 3.97: it
+thinks a bishop is nearly a rook. Implied exchange R - N is 1.24 pawns against a classical 1.80,
+confirmed independently on three curated openings at +110 cp (n=3) and five random ones at
++105 +- 21 cp (n=5).
+
+That is the whole explanation of Rxf3. The engine priced the exchange at ~105 cp, found ~130 cp of
+positional compensation, and called it +22. At a correct ~180 cp it scores about -55 and plays
+something else.
+
+### Method note
+
+An earlier pass at this got signs wrong -- it removed pieces from random-playout positions without
+normalising the search score to a single point of view, and returned an incoherent -25 +- 41. The
+numbers above are the corrected run. Random-playout positions are also too tactical for the probe;
+positions are filtered to |base| < 400 cp.
+
+### Next
+
+A rook correction in the eval is the narrow, testable form of this: the rook is the outlier, and the
+exchange is the failure mode we can actually see in a game. Untested as yet.
