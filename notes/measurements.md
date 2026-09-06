@@ -1345,9 +1345,13 @@ transferable, and no absolute reserve can be tuned at a short time control.
 ### Also measured, and not caused by this change
 
 `tools/clock_fuzz.py` on the fix: consumption averages 109% of the budget handed to `search`, worst
-case 146%. SAFETY = 0.85 is absorbing less than it was meant to. Pre-existing, present in round 31,
-and it does not break the no-flag property below -- it moves the threshold from 2.35 s to 1.6 s.
-Worth its own look if there is time.
+case 146%. Worth its own look if there is time.
+
+**Corrected 6 Sep, see below.** Those two numbers are the *candidate's*, not the engine's. The
+candidate here included ac87200, which stopped banking the last fifth of the budget -- that is
+precisely a change that raises consumption, so measuring 109% on it and calling the result
+pre-existing was reading the treatment as the control. ac87200 is reverted. The shipping engine
+measures 88% / 126%.
 
 ### Platform init is usually local-like, but the machine varies by 2.5x
 
@@ -1440,19 +1444,84 @@ Run 34024644133, seed 31, `clock-flat-profile` vs `8897b43` at 120s + 0.5s. Plan
 an expected final fullmove rather than dividing by a constant, so the divisor shrinks with the clock
 and the profile flattens.
 
-Simulated over a full-length game at the fuzzer's measured 109% consumption:
+Simulated over a full-length game at the corrected 88% consumption (see the section below; the
+first version of this table used 109% and understated the effect):
 
       fullmove    old div30    flat mtg
-             8      3717 ms     1529 ms
-            20      2695        1544
-            40      1653        1578
-            60      1096        1626
-            80       799        1712
-            95       671        1074
-           105       614         842
-      left at 105   10.3 s       9.9 s
+             8      3717 ms      1529 ms
+            20      2894         1584
+            40      1972         1703
+            60      1415         1888
+            80      1079         2254
+            95       918         1520
+           105       840         1218
+      left at 105   18.2 s       18.6 s
 
-Both finish with about ten seconds, so this is a redistribution and not another attempt to spend
-more -- which is the point, given that spending more has now been rejected twice. It is the direct
-test of the claim the two rejections imply: that in an 80-100 move game an even profile beats a
-front-loaded one.
+Both finish with about eighteen seconds, so this is a redistribution and not another attempt to
+spend more -- which is the point, given that spending more has now been rejected twice. It is the
+direct test of the claim the two rejections imply: that in an 80-100 move game an even profile beats
+a front-loaded one.
+
+The simulation is worth trusting slightly more than a simulation usually deserves, because it
+predicts something already observed. At 88% consumption it says the old divisor parks the clock at
+18.2 s by move 105; the twelve-game leftover series shows 17-19 s. At 109% it said 10.3 s, which
+matches nothing. Reality picks the same consumption figure the fuzzer does.
+
+## 6 Sep -- the search budget overrun, measured properly: not a bug, and tightening it would hurt
+
+Carried on the open list as "the search overruns its budget, 109% mean and 146% worst, SAFETY = 0.85
+is absorbing less than intended". Both figures were wrong, and the conclusion drawn from them was
+backwards.
+
+They were measured on a *candidate* build that included ac87200, whose entire content was "keep the
+depths that run out of clock, and stop banking a fifth of the budget" -- a change that exists to
+raise consumption. Recording its consumption as the engine's, and annotating it "pre-existing", read
+the treatment as the control. ac87200 is reverted; `engine/search.py` carries none of it.
+
+Re-measured on the shipping engine (`eb3800b`), 40 positions from random playouts at seed 20260906,
+seven budgets from 50 ms to 3200 ms, 280 samples:
+
+      budget      mean     p50     p95   worst   mean depth
+        50ms       91%     88%    118%    126%          9.1
+       100ms       91%     89%    119%    126%         10.0
+       200ms       90%     92%    111%    119%         10.9
+       400ms       90%     95%    112%    121%         11.9
+       800ms       86%     90%    110%    117%         13.0
+      1600ms       84%     84%    110%    112%         14.0
+      3200ms       87%     93%    108%    110%         15.2
+
+      consumption, all budgets    88%
+      worst overrun              126%
+      fraction over 100%        33.6%
+      fraction over 115%         3.6%
+
+So the engine **under**spends its budget by 12% on average. It does not overrun on average at all.
+The 126% tail is bounded, it does not grow with the budget -- the largest tails are at the shortest
+budgets, where a fixed overhead is proportionally biggest -- and it is comfortably inside the 46%
+that the no-flag property was derived against, so the structural guarantee is stronger than it was
+assumed to be, not weaker.
+
+### Why this closes the item rather than opening it
+
+The obvious action was to tighten the node-budget margin (`remaining * nps * 1.2`) to cut the tail.
+That is the wrong direction. Consumption, not overrun, is what is costing us: the underspend is
+multiplicative with everything else in the chain.
+
+      SAFETY                          0.85
+      search consumption              0.88
+      product                         0.75
+
+Three quarters of the allowance is what actually reaches the board, and 75% is exactly what fitting
+the old policy to seven rated games produced. Two independent routes to the same number. Tightening
+the node margin would buy a smaller tail by making the 0.88 smaller, spending the scarce quantity to
+buy more of the abundant one.
+
+The tail is also not the thing that loses games. Nothing in rounds 31, 32 or 33 was a flag; rounds
+31 and 32 were the opposite failure, an engine sitting on 19 s it refused to spend.
+
+### What the item becomes
+
+Not "fix the overrun". The live question is whether SAFETY can come *up* from 0.85 once a time
+profile is settled, since a 26% bounded tail against a 15% haircut is a margin sized for a risk
+larger than the measured one. That is a change to make on top of whichever profile the in-flight
+SPRT picks, measured on its own, and not stacked on an experiment already running.
