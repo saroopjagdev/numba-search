@@ -1891,3 +1891,94 @@ At 80 of 300 games the 1024 match stood at +13 +- 16 and was reported here as wi
 "clearly saturated". It finished at +32.5 +- 10.1. The error bar at the time spanned that outcome
 comfortably, so the reading was never supported -- it was a point estimate treated as a result.
 Width does not saturate over the range we can afford; it just pays badly.
+
+## 7 Sep -- auditing correctness instead of measuring changes, and what it found
+
+Prompted by a fair question: this was only found because it was asked for, so what else is wrong?
+
+The reason the bug below survived a week is a process one. Every instrument here answers "did that
+change help?" and answers it statistically at the +-18 Elo an SPRT resolves. Nothing was asking "is
+the engine *wrong* about something whose answer is already fixed". That second question needs no
+games, no error bars and no CI: a lone bishop cannot mate, and the engine said +372.
+
+### The bug: no insufficient-material knowledge
+
+`tools/audit_truth.py`, new, asserts positions whose value is certain by rule. **9 of 12 correct,
+3 wrong, all the same defect:**
+
+    K+N vs K      +330   dead draw
+    K+B vs K      +372   dead draw
+    K+NN vs K     +348   dead draw
+
+K vs K, same-colour bishops and K+N vs K+N are correct at 0, and everything that *can* mate (KR,
+KQ, KBB, KBN) is correctly won -- so this is specifically the "material that cannot force mate"
+case, not a general endgame failure.
+
+It is not theoretical. Final positions of our three insufficient-material draws:
+
+    rd 38  1K6/8/8/8/4k3/8/8/4B3      our K+B against a bare king
+    rd 42  8/5K2/8/8/k7/8/7B/8        our K+B against a bare king
+    rd 39  8/5K2/8/8/8/8/8/4k3        bare kings
+
+The engine liquidated won games into dead draws while believing it was ~350 cp ahead, because a
+lone bishop scores as a bishop. It will trade its last pawn for the opponent's last piece to "win
+material". That also explains the 119-149 move games and the low clock at the end: it was grinding
+positions it thought were winning and that were already drawn.
+
+### The ladder, 36 rated games
+
+    rd 12-29   +14 =1 -3
+    rd 30-45   +5 =6 -5
+
+**All seven draws were positions we had been better or winning in**, by our own evaluation at the
+peak: +202, +650, +105, +325, +325, +326, +69. Three were lost to the bug above outright.
+
+### Three attribution bugs in my own analysis, and the root cause
+
+Worth recording because the same mistake appeared three times in one session.
+
+1. `blunder_scan.py` first attributed drops to the wrong side (inverted parity test).
+2. Corrected to parity, it was *still* wrong: **rated games start from a curated FEN, so black
+   moves first in some of them** and ply parity says nothing about who moved. The fix is to read
+   `board.turn` before the push and never infer it.
+3. `check_forced.py` inherited both and reported us as +2172 in a game where we were down a bishop.
+   Deleted rather than repaired -- a tool that has already produced a confident wrong number once
+   is not worth trusting into the deadline.
+
+The root cause in all three is inferring a fact that was available directly. `board.turn` was
+always there to be asked.
+
+A fourth of the same shape: the first `audit_truth.py` asserted three "known" drawn endings, and
+one of them was written as a rook pawn but was actually a g-pawn with a bishop that did control the
+queening square. That would have reported an engine failure that was really an author failure.
+Endgame theory is now excluded from the suite; only rule-certain cases are asserted, because a
+suite that cries wolf is worse than no suite.
+
+### Where our losses actually come from
+
+`tools/blunder_scan.py` measures the largest evaluation drop across a move we made, counted **only
+out of positions still worth playing** (better than -300). The first version had no such filter and
+put every loss's "worst move" deep inside an already decided position -- going from -16 pawns to
+-20 is volatility, not the move that lost the game. That version also produced an apparent finding,
+that six of eight worst moves were king moves, which **dissolved entirely** once the filter was
+added. It was measuring which pieces move when a king is being chased.
+
+Filtered, across eight losses: five cliffs and three slides.
+
+    rd 31  Nxe5   -1260      rd 32  Kf3   -2065      rd 45  Ke4  -381
+    rd 26  Qf6     -369      rd 22  Rxb7   -252
+    rd 25, 40, 41: no single drop, gradual
+
+So losses are roughly half single-move tactical failures and half being slowly outplayed. That is a
+search-quality problem and an evaluation problem in similar measure, and neither is closed.
+
+### What this changes
+
+The immediate work is drawn-material detection: score 0 when the side that is ahead cannot mate.
+Small, standard, and it only fires on configurations that are drawn by rule, so the risk is
+unusually low for an evaluation change.
+
+The larger change is to the method. `audit_truth.py` is cheap, exact, and should gate the build; a
+case goes in whenever a game shows the engine believing something false by rule. Correctness
+auditing finds bugs that Elo measurement structurally cannot, because a bug that costs 3 points in
+36 games is invisible next to +-18 Elo error bars.
