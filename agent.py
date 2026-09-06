@@ -28,10 +28,27 @@ MOVE_OVERHEAD_MS = 60.0
 # overspending once loses the game outright, underspending costs a few centipawns of depth.
 SAFETY = 0.85
 
-# Assumed moves remaining. The referee adjudicates at ply 300, so a game is at most 150 moves each,
-# but spreading the base clock over 150 would leave the engine playing far too fast in the opening
-# where the position is still decidable. Most games end well before the cap.
-ASSUMED_MOVES_LEFT = 30
+# The move we plan the clock out to, and the shortest horizon we will ever plan against.
+#
+# Dividing the remaining clock by a constant spends a fixed *fraction* of it each move, which is
+# geometric and therefore front-loaded: 3.7 s at the start against 0.8 s by move 80. Planning to a
+# move number instead makes the profile flat, because the divisor shrinks as the clock does.
+#
+# Flat is what the evidence asks for. Two attempts to spend more per move were rejected at -65.9 and
+# -55.2 Elo, and lining them up showed both were the same experiment -- they opened at 7.8 s a move
+# and bought twenty good moves and sixty bad ones. Rated rounds 31 and 32 were both lost in the
+# phase where the front-loaded profile has already decayed to well under a second. Depth in a quiet
+# opening is close to worthless; depth on move 80, with a passed pawn running, is the game.
+#
+# EXPECTED_FINAL_FULLMOVE is measured, not guessed: rated games start from a curated opening around
+# fullmove 8 and have been ending between fullmove 90 and 110. MIN_MOVES_TO_GO keeps the horizon
+# from collapsing in a game that outlives the estimate -- past that point the policy degrades to
+# dividing by a constant 20, which is geometric again and so cannot run the clock out.
+EXPECTED_FINAL_FULLMOVE = 100
+MIN_MOVES_TO_GO = 20
+
+# The increment the rules give us. Hard-coded because the platform never tells us what it is.
+INCREMENT_MS = 500.0
 
 _searcher = Searcher()
 _ponderer = Ponderer(_searcher)
@@ -55,14 +72,18 @@ def _warm_up() -> None:
 _warm_up()
 
 
-def _budget_ms(time_left_ms: int) -> float:
+def _budget_ms(time_left_ms: int, fullmove: int) -> float:
     """How long this move may take, in milliseconds."""
     usable = max(0.0, float(time_left_ms) - MOVE_OVERHEAD_MS)
-    # The increment is banked every move, so it is spendable in full over and above the share of
-    # the base clock -- but only most of it, or the clock ratchets down over a long game.
-    allowance = usable / ASSUMED_MOVES_LEFT + 0.75 * 500.0
+    moves_to_go = max(MIN_MOVES_TO_GO, EXPECTED_FINAL_FULLMOVE - fullmove)
+    # Everything we will ever have for the moves that remain: the clock now, plus the increments
+    # those moves will earn. Sharing that evenly is what makes the profile flat rather than
+    # geometric -- the horizon shrinks alongside the clock, so the quotient barely moves.
+    horizon = usable + (moves_to_go - 1) * INCREMENT_MS
     # Never stake more than a quarter of what is left on one move, however good the position looks.
-    return max(10.0, min(allowance, usable * 0.25) * SAFETY)
+    # This is also what makes flagging impossible: a quarter of the clock, after SAFETY, is below
+    # the increment whenever the clock is short, so a short clock always recovers.
+    return max(10.0, min(horizon / moves_to_go, usable * 0.25) * SAFETY)
 
 
 def get_move(fen: str, time_left_ms: int) -> str:
@@ -92,7 +113,7 @@ def get_move(fen: str, time_left_ms: int) -> str:
 
         _searcher.set_position(fen)
         _searcher.record_position()
-        move, _score, _depth = _searcher.search(_budget_ms(time_left_ms))
+        move, _score, _depth = _searcher.search(_budget_ms(time_left_ms, fullmove))
         uci = move_to_uci(np.int32(move))
 
         # The legality guard. The engine's own generator is perft-verified, but an illegal move is
