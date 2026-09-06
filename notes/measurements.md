@@ -1349,8 +1349,47 @@ case 146%. SAFETY = 0.85 is absorbing less than it was meant to. Pre-existing, p
 and it does not break the no-flag property below -- it moves the threshold from 2.35 s to 1.6 s.
 Worth its own look if there is time.
 
-### Platform init is 2.5x the local figure
+### Platform init is usually local-like, but the machine varies by 2.5x
 
-Round 31 reports "Ready in 45.1 s" against 18.1 s measured locally, i.e. 50% of the 90 s allowance
-and not far off the 75 s cap. The local number is not a safe proxy for the platform one. Anything
-added to warm-up should be checked against 45 s, not against 18 s.
+Round 31 reports "Ready in 45.1 s" against 18.1 s measured locally. Across the last twelve rated
+games, though, init runs 17.0-20.4 s on eleven of them and 45.1 s on exactly one -- round 31, on
+machine `w-b3a6a9`. Round 32, on `w-299858`, was 25.2 s. So the platform is not systematically
+slower than the dev box; it is usually the same speed and occasionally less than half of it.
+
+The planning consequence is the same either way, and it is the reason this is recorded at all: the
+budget that matters is the worst machine we can be assigned, not the median one. Size warm-up
+against 45 s and the 75 s cap, not against the 18 s we measure here. An init overrun is an instant
+loss in every game played on that machine.
+
+## 6 Sep -- rated round 32: the same clock floor, the second game running
+
+Lost by checkmate holding 19.1 s, against `IM_master`, French Tarrasch, as White. Round 31 was not
+a one-off; this is the identical fault in the next game played.
+
+    move 50   0.7 s   19.9 s left
+    move 60   0.6 s   18.7 s left
+    move 70   0.6 s   17.9 s left
+    move 80   0.5 s   17.9 s left
+    move 83   0.0 s   19.1 s left   mated
+
+Thirty-three consecutive moves at 0.5-0.7 s with the clock pinned between 17.6 s and 19.1 s, exactly
+the 18 s crossover the absolute reserve predicts. Material was level from move 50 to move 80 -- this
+was not a lost position being ground down. Black had a passed d-pawn, we shuffled the king
+Kf3-Ke2-Ke3-Kf4-Kg3-Kg2-Kg1 at half a second a move, the pawn promoted on move 82, and the new queen
+mated in eight. Stopping a runner is exactly the kind of concrete, forcing problem that a few extra
+plies solves and half a second does not.
+
+### The reserve did do what it was designed to do
+
+Leftover clock across the last twelve rated games, oldest first:
+
+    r21 32.6  r22 74.9  r23 52.3  r24 38.6  r25 57.9  r26 47.1
+    r27 93.6  r28 76.8  r29 45.3  r30 39.3  r31 18.9  r32 19.1
+
+The reserve landed before round 31 and cut waste from 33-94 s down to 19 s, which is the improvement
+it was built for and it delivered it. It just converted the waste into a worse failure: the old
+policy underspent everywhere, the new one spends properly until it hits the floor and then stops
+thinking entirely for the rest of the game. Both games it has played were lost from the floor.
+
+Record over those twelve: five wins, five losses, two draws. Every one of the five losses ended with
+serious time unused (19.1, 18.9, 47.1, 57.9, 74.9 s).
