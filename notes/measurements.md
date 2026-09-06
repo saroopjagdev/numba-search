@@ -1820,3 +1820,74 @@ Contempt only fired where the search knew it was a draw -- repetition and the fi
 never touched the liquidations into dead endings that make up the other half of our draws, because
 the network scores those near zero on its own. So this run does not close the question of whether
 draw-avoidance is worth anything; it closes the question of whether *this* form of it is.
+
+## 6 Sep -- NNUE width, resolved: 256 is an interior optimum
+
+The plan calls A/B-ing width "the one number we must measure ourselves", because published width
+deltas come from C++ engines and do not transfer. `net-files/` has held trained nets at 128 / 256 /
+512 / 1024 since Phase 3, all with identical quantisation (QA=255, QB=64, SCALE=400), and
+`net256.npz` is byte-identical to the shipped `weights/nnue.npz`. None had ever been compared.
+
+The trade has two halves that a clock match cannot separate: a wider net judges better *and* costs
+more per node. Both were measured on their own.
+
+### Half one -- node cost
+
+Single `_iterate` call at depth 10 over six positions; node count and wall time from the same call.
+
+| width | nps | cost vs shipped 256 | file |
+|---|---|---|---|
+| 128 | 757k | 0.77x | 202 KB |
+| 256 | 580k | 1.00x | 403 KB |
+| 512 | 281k | 2.06x | 805 KB |
+| 1024 | 181k | 3.21x | 1.6 MB |
+
+Near-linear in width above 128, as an O(width) accumulator update plus an O(2*width) forward pass
+must be. Below 256 the evaluation stops being what a node mostly costs, so halving width buys only
+1.30x rather than 2x -- which is why shrinking is a worse deal than it looks.
+
+### Half two -- evaluation quality, speed removed
+
+`tools/fixed_depth_match.py`, new. Both nets search to the same fixed depth, so the speed term is
+gone and only judgement is left. 300 games each at depth 8, versus the shipped 256.
+
+| width | fixed-depth quality | speed at 52.5 Elo/halving | **net** |
+|---|---|---|---|
+| 128 | -30.2 +- 9.0 | +19.8 | **-10** |
+| 256 | 0 (null, exact) | 0 | **0** |
+| 512 | +17.4 +- 9.2 | -55.0 | **-38** |
+| 1024 | +32.5 +- 10.1 | -88.4 | **-56** |
+
+**256 is an interior optimum: both neighbours are worse, and it is the width we already ship.** No
+change. The plan's burden of proof -- "burden of proof sits on the bigger net" -- is not met by
+512, and is missed by 1024 by a wider margin still.
+
+### The finding underneath the finding
+
+Quality grows about **+16 Elo per doubling** of width (0 -> +17 -> +33), and it is close to linear,
+not flattening. Published NNUE work sees roughly three times that per doubling. Our curve is not
+saturating; it is simply *shallow*.
+
+A shallow-but-linear curve is the signature of a net whose capacity is not the binding constraint.
+Extra width is being added to a model that has not extracted enough from its data to use it, so
+each doubling returns a third of what it returns for engines trained on far more positions. If the
+capacity were saturated the curve would bend; it does not.
+
+That reframes where the remaining evaluation Elo is. It is not in the architecture -- width is
+priced and every setting other than the current one loses. It is in **training**: data volume,
+filtering and steps. The queued filtered-vs-unfiltered corpus A/B is now the highest-value
+evaluation experiment left, and a longer training run at width 256 is worth more than any width
+change, because at 2.06x the node cost 512 would need +55 Elo of quality and a better-trained 256
+costs nothing per node at all.
+
+Caveat worth stating: quality was measured at depth 8 while we play nearer depth 13. Deeper search
+generally compensates for a weaker evaluation, so the true quality gaps at our real depth are
+likely somewhat *smaller* than the table. That direction strengthens the verdict against 512 and
+1024 and slightly softens the case against 128; it does not move the optimum off 256.
+
+### An early read that was wrong
+
+At 80 of 300 games the 1024 match stood at +13 +- 16 and was reported here as width having
+"clearly saturated". It finished at +32.5 +- 10.1. The error bar at the time spanned that outcome
+comfortably, so the reading was never supported -- it was a point estimate treated as a result.
+Width does not saturate over the range we can afford; it just pays badly.
