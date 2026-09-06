@@ -338,3 +338,53 @@ def material_balance(bb: np.ndarray) -> np.int32:
         total += I32(values[piece]) * I32(popcount(bb[piece]))
         total -= I32(values[piece]) * I32(popcount(bb[piece + 6]))
     return total
+
+
+# a1 is dark, so the low byte is a1/c1/e1/g1 and the pattern alternates up the board.
+DARK_SQUARES = np.uint64(0xAA55AA55AA55AA55)
+
+
+@njit("boolean(uint64[:])", cache=False)
+def no_mating_material(bb: np.ndarray) -> bool:
+    """True when neither side can force mate, whatever the piece values say.
+
+    Without this the engine happily trades its last pawn for the opponent's last piece: a lone
+    bishop still scores as a bishop, so K+B vs K read as +372 and three won ladder games were
+    liquidated into dead draws. `tools/audit_truth.py` asserts each case below.
+
+    Only configurations that are drawn are listed. Two knights against a bare king cannot be
+    *forced*, and a knight each cannot either; a helpmate exists in both, but treating them as
+    playable is the mistake that costs games, not the other way round.
+    """
+    # Any pawn, rook or queen and mate is on the table. Pawns matter most -- they promote.
+    for piece in (WP, WR, WQ):
+        if bb[piece] | bb[piece + 6]:
+            return False
+
+    white_knights = popcount(bb[WN])
+    black_knights = popcount(bb[WN + 6])
+    white_bishops = popcount(bb[WB])
+    black_bishops = popcount(bb[WB + 6])
+
+    # K vs K, and a single minor against a bare king.
+    if white_knights + black_knights + white_bishops + black_bishops <= 1:
+        return True
+
+    white_minors = white_knights + white_bishops
+    black_minors = black_knights + black_bishops
+
+    # One bishop each: drawn when they share a colour complex, since neither can ever attack the
+    # squares the other defends. On opposite colours it stays a normal position.
+    if white_bishops == 1 and black_bishops == 1 and white_minors == 1 and black_minors == 1:
+        white_dark = (bb[WB] & DARK_SQUARES) != np.uint64(0)
+        black_dark = (bb[WB + 6] & DARK_SQUARES) != np.uint64(0)
+        return bool(white_dark == black_dark)
+
+    # A knight each: no forced mate for either side.
+    if white_minors == 1 and black_minors == 1 and white_knights == 1 and black_knights == 1:
+        return True
+
+    # Two knights against a bare king cannot be forced.
+    if white_knights == 2 and white_minors == 2 and black_minors == 0:
+        return True
+    return bool(black_knights == 2 and black_minors == 2 and white_minors == 0)

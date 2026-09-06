@@ -45,7 +45,7 @@ from engine.bitboard import (
     bishop_attacks,
     rook_attacks,
 )
-from engine.eval import evaluate
+from engine.eval import evaluate, no_mating_material
 from engine.nnue import Network, evaluate_at, new_stack, push, push_null, refresh
 from engine.position import (
     ALL_OCC,
@@ -440,6 +440,11 @@ def quiescence(
         control[2] = 1
         return I32(0)
 
+    # Checked here as well as in the main search because this is where the liquidation actually
+    # happens: the capture that leaves K+B vs K is a capture, so quiescence is what scores it.
+    if no_mating_material(bb):
+        return I32(0)
+
     if use_nnue:
         stand_pat = evaluate_at(acc, output, output_bias, mailbox, ply, state[STM])
     else:
@@ -588,6 +593,9 @@ def negamax(
         # Draw by repetition or the fifty-move rule. Checked before anything else so a repetition
         # is never masked by a transposition table hit from a different path.
         if _is_repetition(path, state, key, ply, game_keys, game_count) or state[HALFMOVE] >= 100:
+            return I32(0)
+        # Neither side can force mate, so the piece count is irrelevant and the game is drawn.
+        if no_mating_material(bb):
             return I32(0)
         # Mate-distance pruning: if we already have a mate at this ply, a longer one cannot help.
         alpha = max(alpha, I32(-MATE + ply))

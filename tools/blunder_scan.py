@@ -98,7 +98,7 @@ def main() -> None:
         levels = [s for _, s, _, _ in scores if abs(s) < MATE_ZONE]
         shape = "cliff" if worst >= 250 else ("slide" if levels and min(levels) < -200 else "flat")
         print(
-            f"{rd:>3} {game.headers.get('Result','?'):<9}{worst:>11}{worst_san:>16}"
+            f"{rd:>3} {game.headers.get('Result', '?'):<9}{worst:>11}{worst_san:>16}"
             f"{worst_ply:>5}   {shape}"
         )
 
