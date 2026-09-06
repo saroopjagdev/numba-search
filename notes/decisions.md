@@ -215,3 +215,24 @@ Consequences:
 time and took ~12 hours for a verdict this run reached in 16 minutes. Games are clock-bound, so
 parallelism is the only lever that exists. Local runs are for smoke tests; verdicts come from
 `.github/workflows/sprt.yml`.
+
+## 2026-09-06 -- Pondering ships, and it ponders the parent -- MEASURED
+
+`+63.2 +- 23.8` Elo, ACCEPTED at LLR +5.98 over 400 games (run 33999768084). See
+`notes/measurements.md` for the full result. This is the largest measured gain of the week.
+
+Two things are locked by that number, not just one:
+
+**Pondering is in.** `AGENTS.md` line 33 permits it explicitly -- the process keeps its core while
+the opponent thinks -- and roughly half a bullet game's wall time was previously spent with that
+core idle.
+
+**We ponder the position after our own move, not a predicted reply.** This was the open question and
+the measurement settles it in favour of the parent. Searching a guessed reply concentrates the work
+on one line and wastes all of it when the guess is wrong; searching the parent means every legal
+reply is a child of what was searched. Do not "improve" this later by adding a PV-based ponder-move
+guess -- that is the version this beat.
+
+Rejected along the way: joining the ponder thread with a timeout. We have one core, so continuing
+while a second search still holds it is the one outcome worse than never pondering. The join is
+unbounded on purpose.

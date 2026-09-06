@@ -1173,3 +1173,50 @@ each plus a 12-second verdict), 16.3 minutes wall clock. Call it ~300 with per-j
 ~15% of a 2000-minute monthly allowance -- roughly 1.5 runner-minutes per game. An SPRT of this size
 is a routine expense, not a special occasion, and the backlog of unmeasured changes should be run
 through it rather than argued about.
+
+## 6 Sep -- pondering, measured: +63 Elo
+
+`engine/ponder.py`, commit `e7e2a1b`. Run 33999768084, 400 games at 30s+0.125s across 20 shards,
+candidate `e7e2a1b` against baseline `3a86360e`, seed 11.
+
+```
+ACCEPTED  +134 =204 -62   LLR +5.98  in [-2.94, 2.94]
+Elo +63.2 +- 23.8
+```
+
+The largest single measured gain of the week so far, and above the +40-60 the plan budgeted for it.
+That is not surprising in hindsight: a bullet game spends roughly half its wall time waiting for the
+opponent, and until now the core sat idle for all of it.
+
+**What was actually pondered matters.** Classical pondering guesses the opponent's reply from the
+principal variation and throws the work away when the guess is wrong -- which at bullet quality is
+often. This searches the position *after our own move* instead, with the opponent to play, so every
+reply they might choose is a child of what was searched. It buys less depth on any one line and
+never buys zero. The +63 is a measurement of that design, not of pondering in general.
+
+**Three properties that fail silently, so they get an instrument rather than a review**
+(`tools/verify_ponder.py`): the GIL is genuinely released (3,330,996 main-thread spins during 400 ms
+of pondering -- a *spin*, not a sleep, since sleeping releases the GIL and would pass even with
+`nogil` off); stopping is prompt (0.3 ms); and the ponder searcher fills the *shared* table
+(+10,348 entries). A ponderer writing into its own private table would look perfectly healthy and
+buy exactly nothing.
+
+The shared table is unlocked. That is deliberate and bounded: a torn entry can produce a wrong
+score or a move from another position, but the stored move is only ever used to *order* moves the
+generator has already produced, so it can never introduce an illegal one. The root move travels out
+through `control` rather than the table for the same reason.
+
+**Cost: 607 runner-minutes across 21 jobs, 33.8 minutes wall clock for 400 games.** Consistent with
+the ~1.5 runner-minutes per game measured on 5 Sep, and double that run because it played double the
+games -- the fan-out shortens the wall clock, it does not make the games cheaper.
+
+That figure is worth stating plainly because it is a real constraint. A 400-game SPRT costs roughly
+30% of the free tier's 2000 private-repo minutes per month; 283 + 607 = 890 are already spent. Two
+more runs of this size exhaust the allowance. The levers, in the order they should be pulled: raise
+the spending limit (this is a week where compute is worth buying), then shorten the time control,
+then drop to 200 games -- last, because 200 games is exactly what left the net-vs-HCE test at an
+LLR of 2.61 against a 2.94 bound, and an inconclusive run buys nothing at any price.
+
+Note also how much of the cost is *not* chess: each game pays JIT twice, roughly 20 seconds per
+agent, against 60-75 seconds of actual clock. Close to a third of every runner-minute is numba
+compiling, and it is spent again on every one of the 400 games.
