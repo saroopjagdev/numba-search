@@ -38,6 +38,13 @@ import time
 import numpy as np
 from numba import njit
 
+from engine.bitboard import (
+    KING_ATTACKS,
+    KNIGHT_ATTACKS,
+    PAWN_ATTACKS,
+    bishop_attacks,
+    rook_attacks,
+)
 from engine.eval import evaluate
 from engine.nnue import Network, evaluate_at, new_stack, push, push_null, refresh
 from engine.position import (
@@ -53,9 +60,13 @@ from engine.position import (
     PROMO_BIT,
     SIDE_KEY,
     STM,
+    WB,
     WHITE_OCC,
     WK,
+    WN,
     WP,
+    WQ,
+    WR,
     Int,
     generate_moves,
     is_attacked,
@@ -195,6 +206,132 @@ def _pick_best(moves: np.ndarray, scores: np.ndarray, offset: Int, count: Int, s
     return start
 
 
+@njit("uint64(uint64[:], int64, uint64)", cache=False)
+def _attackers_to(bb: np.ndarray, square: Int, occ: U64) -> U64:
+    """Every piece of either colour attacking `square`, under the given occupancy.
+
+    Occupancy is a parameter rather than `bb[ALL_OCC]` because the swap-off below removes pieces as
+    they are captured, and each removal can uncover an x-ray attacker behind it. Recomputing the
+    slider attacks against the shrinking occupancy is what makes those appear.
+
+    The pawn table is indexed by the *defending* colour, as in `is_attacked`: a white pawn attacks
+    `square` exactly when a black pawn standing there would attack the white pawn.
+    """
+    attackers = PAWN_ATTACKS[1, square] & bb[WP]
+    attackers |= PAWN_ATTACKS[0, square] & bb[WP + 6]
+    attackers |= KNIGHT_ATTACKS[square] & (bb[WN] | bb[WN + 6])
+    attackers |= KING_ATTACKS[square] & (bb[WK] | bb[WK + 6])
+    diagonal = bb[WB] | bb[WQ] | bb[WB + 6] | bb[WQ + 6]
+    attackers |= bishop_attacks(square, occ) & diagonal
+    straight = bb[WR] | bb[WQ] | bb[WR + 6] | bb[WQ + 6]
+    attackers |= rook_attacks(square, occ) & straight
+    return U64(attackers)
+
+
+@njit("boolean(uint64[:], int8[:], int64[:], int32, int32)", cache=False)
+def see_ge(
+    bb: np.ndarray, mailbox: np.ndarray, state: np.ndarray, move: np.int32, threshold: np.int32
+) -> bool:
+    """Is the static exchange on this capture worth at least `threshold`?
+
+    MVV-LVA orders captures by what they win; it cannot tell that the win is illusory. QxP looks
+    excellent right up to the moment the pawn is defended, and quiescence then searches the whole
+    losing chain to find out. SEE settles it without making a single move, by playing out the
+    exchange on the target square with the least valuable attacker each time.
+
+    Answering "at least `threshold`?" rather than "how much?" is what keeps this cheap: it needs no
+    gain array, so nothing is allocated per call -- which matters, because this runs on every
+    capture in the quiescence tree.
+
+    `swap` carries the running balance, negated at each step so it is always from the point of view
+    of the side about to capture, and `result` flips with it. A side that would come out behind
+    simply declines to continue the exchange, which is what the early `break` represents.
+
+    Two things this deliberately does not model: pins, so a pinned defender is counted as a real
+    one, and promotions, whose value change mid-exchange the caller avoids by not asking. Both make
+    it conservative rather than wrong.
+    """
+    frm = move_from(move)
+    to = move_to(move)
+
+    victim = mailbox[to]
+    captured = PIECE_VALUES[I32(victim) % I32(6)] if victim != EMPTY else I32(0)
+    swap = captured - threshold
+    if swap < 0:
+        # Even winning the piece for free falls short of the threshold.
+        return False
+
+    swap = PIECE_VALUES[I32(mailbox[frm]) % I32(6)] - swap
+    if swap <= 0:
+        # Losing our own attacker outright still clears the threshold, so nothing can go wrong.
+        return True
+
+    # The target square is emptied as well as the origin: the victim is gone, and leaving it in
+    # would block the x-rays that recapture through it.
+    occ = (bb[ALL_OCC] ^ (U64(1) << U64(frm))) & ~(U64(1) << U64(to))
+    stm = I32(state[STM])
+    attackers = _attackers_to(bb, to, occ)
+    result = 1
+
+    while True:
+        stm = I32(1) - stm
+        attackers &= occ
+        own = attackers & bb[WHITE_OCC + stm]
+        if own == 0:
+            break
+        result ^= 1
+        offset = 6 * stm
+        diagonal = bb[WB] | bb[WQ] | bb[WB + 6] | bb[WQ + 6]
+        straight = bb[WR] | bb[WQ] | bb[WR + 6] | bb[WQ + 6]
+
+        piece = own & bb[WP + offset]
+        if piece:
+            swap = PIECE_VALUES[0] - swap
+            if swap < result:
+                break
+            occ ^= U64(1) << U64(lsb(piece))
+            attackers |= bishop_attacks(to, occ) & diagonal
+            continue
+        piece = own & bb[WN + offset]
+        if piece:
+            swap = PIECE_VALUES[1] - swap
+            if swap < result:
+                break
+            occ ^= U64(1) << U64(lsb(piece))
+            continue
+        piece = own & bb[WB + offset]
+        if piece:
+            swap = PIECE_VALUES[2] - swap
+            if swap < result:
+                break
+            occ ^= U64(1) << U64(lsb(piece))
+            attackers |= bishop_attacks(to, occ) & diagonal
+            continue
+        piece = own & bb[WR + offset]
+        if piece:
+            swap = PIECE_VALUES[3] - swap
+            if swap < result:
+                break
+            occ ^= U64(1) << U64(lsb(piece))
+            attackers |= rook_attacks(to, occ) & straight
+            continue
+        piece = own & bb[WQ + offset]
+        if piece:
+            swap = PIECE_VALUES[4] - swap
+            if swap < result:
+                break
+            occ ^= U64(1) << U64(lsb(piece))
+            attackers |= (bishop_attacks(to, occ) & diagonal) | (rook_attacks(to, occ) & straight)
+            continue
+        # Only the king is left. Capturing into a square the opponent still attacks is illegal, so
+        # the exchange ends here and the side to move forfeits the last swap rather than making it.
+        if attackers & bb[WHITE_OCC + (I32(1) - stm)]:
+            result ^= 1
+        break
+
+    return result != 0
+
+
 @njit("boolean(uint64[:], int64[:], uint64[:], int64, uint64[:], int64)", cache=False)
 def _is_repetition(
     path: np.ndarray,
@@ -315,6 +452,16 @@ def quiescence(
             if victim != EMPTY:
                 gain = PIECE_VALUES[I32(victim) % I32(6)]
                 if stand_pat + gain + I32(200) < alpha and popcount(bb[ALL_OCC]) > 6:
+                    continue
+                # Static exchange pruning. MVV-LVA has already sorted these by what they *win*,
+                # which is exactly the ordering that puts QxP-defended-by-a-pawn near the front.
+                # Playing it out to discover the loss costs a subtree; asking the swap-off costs a
+                # few dozen instructions and no nodes at all.
+                #
+                # Only plain captures, matching the guard above: the swap-off assumes the victim
+                # stands on the target square and that the attacker's value does not change
+                # mid-exchange, and en passant breaks the first while promotions break the second.
+                if not see_ge(bb, mailbox, state, move, I32(0)):
                     continue
 
         make_move(bb, mailbox, state, key, undo, keys, ply, move)
