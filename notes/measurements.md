@@ -1525,3 +1525,62 @@ Not "fix the overrun". The live question is whether SAFETY can come *up* from 0.
 profile is settled, since a 26% bounded tail against a 15% haircut is a margin sized for a risk
 larger than the measured one. That is a change to make on top of whichever profile the in-flight
 SPRT picks, measured on its own, and not stacked on an experiment already running.
+
+## 6 Sep -- the flat profile is a wash, and that is the most useful clock result yet
+
+Run 34024644133, `clock-flat-profile` (75ce0d7) vs `8897b43`, 120 s + 0.5 s, seed 31, 20 shards.
+
+      SPRT  H0: +0 Elo   H1: +15 Elo   120s + 0.50s
+      20 of 20 shards reported, 400 games pooled
+
+        INCONCLUSIVE  +56 =287 -57   LLR -1.47  in [-2.94, 2.94]
+        Elo -0.9 +- 18.1
+
+**Rejected**, on the rule that a more complicated policy needs a reason to exist. Planning the clock
+out to an expected final fullmove is strictly more machinery than dividing by 30 -- an extra
+constant, an extra parameter threaded through `get_move` -- and it buys a measured nothing. The
+shipping policy stays.
+
+### What the null actually buys
+
+The point estimate is a wash, but the *pattern* across three clock experiments is not, and it
+finally separates two things that were confounded in every previous reading:
+
+| change | what it did | Elo |
+|---|---|---|
+| absolute reserve | spent more, front-loaded, with a floor | **-65.9 +- 21.6** |
+| proportional reserve | spent more, with a floor | **-55.2 +- 18.1** |
+| flat profile | spent the *same total*, redistributed | **-0.9 +- 18.1** |
+
+The flat profile is the only one of the three that holds the total constant. It is also the only one
+that is not a disaster. So the two big negatives were **the floor, not the level, and not the
+shape** -- an engine pinned at increment speed for fifty consecutive moves loses games, and that is
+all those two runs ever measured.
+
+And redistribution across the game is worth zero. Whatever an even profile is supposed to buy in an
+80-100 move game, we cannot detect it at +-18 Elo. That kills the hypothesis the two rejections
+implied and that this run was built to test.
+
+### What is left standing, and the experiment now running
+
+Three clock experiments have been run and none of them tested the premise: that the 18 s left
+unspent is worth Elo at all. Two moved the level but broke the floor; one held the level and moved
+the shape. The level has never been changed cleanly.
+
+Run 34028870199, `clock-half-time` (224cbf3) vs `8897b43`, 120 s + 0.5 s, seed 47. SAFETY 0.85 ->
+0.425 and nothing else, so the candidate thinks for exactly half as long and every one of its
+budgets is strictly *smaller* than the baseline's -- it cannot flag, so the floor that ruined the
+first two runs cannot confound this one.
+
+This measures the Elo cost of a halving, which calibrates the whole workstream and can refute:
+
+- **halving costs <~15 Elo** -- recovering the wasted 25% is worth ~5 Elo, clock work is noise, stop
+  and spend the remaining days on the network and search quality.
+- **halving costs >~50 Elo**, the classical prior, larger for shallow engines than deep ones -- the
+  waste is worth ~20 Elo and the route is allocation by position difficulty, which the engine
+  currently has none of: no easy-move detection, no instability extension, no re-decision once the
+  search starts. The budget is fixed from the clock before the first node and never revised.
+
+Note the high draw rate, 287 of 400 at 72%, which is what holds the error bars at +-18 Elo on a
+400-game run. Self-play between near-identical builds at a slow control draws heavily; resolving
+below about 15 Elo needs a different design, not more games.
