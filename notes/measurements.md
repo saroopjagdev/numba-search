@@ -1790,3 +1790,33 @@ never measured. This is the same error one level down: a measurement was taken, 
 and committed before its instrument was checked against an obvious alternative explanation. The
 check cost one run. The rule that would have caught both: **before acting on a number, name the
 result that would appear if the instrument were lying, and go and look for it.**
+
+
+## 2026-09-06 -- Contempt at 25 cp: -5.2 +- 19.3, rejected
+
+Run 34050503435, `contempt` vs `fe55a7a`, 400 games, 120 s + 0.5 s, seed 71.
+
+      INCONCLUSIVE  +61 =272 -67   LLR -1.97 in [-2.94, 2.94]   Elo -5.2 +- 19.3
+
+Not shipped. The point estimate is negative, the LLR is two thirds of the way to rejecting H1, and
+the standing rule is that more machinery needs a reason to exist. A knob that cannot be shown to
+help is a knob that gets removed.
+
+### What the decisive games suggest, held loosely
+
+Set against the previous run at the same clock and game count (+58 =292 -50), draws fell from 73% to
+68% while the decisive games went from +8 to -6. That is the shape you would expect if contempt did
+exactly what it was built to do -- decline drawn positions -- and the positions it declined were
+ones we then lost. The reading would be that our evaluation is not reliable enough to know when we
+are actually better, so buying decisive games buys losses.
+
+**That is a story, not a measurement.** The two runs have different seeds and different baselines,
+and the drop in draw rate is about 1.5 se, which is nothing. It is recorded because it is the
+hypothesis worth testing if contempt is ever revisited, not because this run established it.
+
+### Scope, restated
+
+Contempt only fired where the search knew it was a draw -- repetition and the fifty-move rule. It
+never touched the liquidations into dead endings that make up the other half of our draws, because
+the network scores those near zero on its own. So this run does not close the question of whether
+draw-avoidance is worth anything; it closes the question of whether *this* form of it is.
