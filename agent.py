@@ -37,7 +37,7 @@ MOVE_OVERHEAD_MS = 60.0
 
 # Fraction of what is theoretically affordable that we actually spend. The asymmetry is brutal:
 # overspending once loses the game outright, underspending costs a few centipawns of depth.
-SAFETY = 0.85
+SAFETY = 0.425
 
 # Assumed moves remaining. The referee adjudicates at ply 300, so a game is at most 150 moves each,
 # but spreading the base clock over 150 would leave the engine playing far too fast in the opening
