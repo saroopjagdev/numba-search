@@ -26,7 +26,16 @@ MOVE_OVERHEAD_MS = 60.0
 
 # Fraction of what is theoretically affordable that we actually spend. The asymmetry is brutal:
 # overspending once loses the game outright, underspending costs a few centipawns of depth.
-SAFETY = 0.85
+#
+# CALIBRATION BUILD -- NOT FOR SHIPPING. Halved deliberately, so this agent thinks for exactly half
+# as long as the shipping one at an identical time control. Played against `8897b43` it measures the
+# Elo cost of a halving of thinking time, which is the number every other clock decision needs and
+# which no experiment so far has established. Three time-management changes have been proposed and
+# tested against a defect -- 18 s of clock left unspent -- whose value was never measured. This
+# measures it. If a halving is cheap the whole workstream is noise and should be abandoned; if it
+# costs the 50-80 Elo that a doubling is classically worth, the waste is worth ~20 Elo and the work
+# is worth finishing. Either way the answer arrives as a number rather than an argument.
+SAFETY = 0.425
 
 # Assumed moves remaining. The referee adjudicates at ply 300, so a game is at most 150 moves each,
 # but spreading the base clock over 150 would leave the engine playing far too fast in the opening
