@@ -1643,9 +1643,54 @@ Raising SAFETY moves the parking point and nothing else. It cannot produce a fla
 parking clock the budget is under the increment and the clock rises again. The 0.85 was protecting
 against a failure the cap already makes impossible.
 
-### In flight
+## 2026-09-06 -- SAFETY 0.85 -> 1.10: +6.9 +- 17.7, and the clock knob is finished
 
-Run 34038018046, `no-ponder-safety110` vs `ca526a3`, 400 games, 120 s + 0.5 s, seed 59. SAFETY 0.85
--> 1.10, chosen so that 1.10 x 0.88 = 0.97: the point is to spend the allowance rather than 88% of
-it. Predicted +22 Elo, and unlike the last three clock experiments the prediction comes from a
-measured quantity rather than from an argument.
+Run 34038018046, `no-ponder-safety110` vs `ca526a3`, 400 games, 120 s + 0.5 s, seed 59.
+
+      INCONCLUSIVE  +58 =292 -50   LLR -0.10 in [-2.94, 2.94]   Elo +6.9 +- 17.7
+
+I predicted +22 and that prediction was wrong -- not noise, an arithmetic error, and worth recording
+because it retires a line of work I had planned to keep pushing.
+
+**The clock is a closed loop.** Total thinking time available in a game is 120 s + 0.5 s per move
+however the per-move allowance is scaled; SAFETY cannot conjure time that the increment did not pay
+for. I took the per-move ratio 1.10/0.85 = 1.29x and treated it as the game ratio. It is not, because
+at SAFETY 0.85 we were already spending 87% of the ceiling. Simulating the recurrence
+`t -> t - budget(t) x 0.88 + 500` over a whole game gives the honest figures:
+
+      87 of our moves     total think time       Elo vs 0.85 at 52.5/halving
+      SAFETY 0.85           142.3 s                 +0.0
+      SAFETY 1.10           152.5 s                 +5.3
+      SAFETY 1.25           156.5 s                 +7.2
+      SAFETY 1.40           159.4 s                 +8.6
+
+Corrected prediction +5.3, measured +6.9 +- 17.7. Those agree. The earlier claim in this file that
+"roughly 20 Elo is sitting on the table" is **retracted**: the true figure is under 9 Elo, and 1.10
+already takes most of it. Kept at 1.10 on the positive point estimate and the matching theory; going
+to 1.25 or 1.40 is worth 2-3 Elo, which no 400-game run at +-18 can ever resolve.
+
+The simulation is validated rather than assumed. For a 149-move game at SAFETY 0.85 it predicts
+183.1 s used and 11.4 s left; rated round 37 ran 149 moves, used 183.0 s and left 11.5 s.
+
+**Flag risk is closed analytically.** Iterating the same recurrence over 300 moves -- the 600-ply
+draw limit -- with the worst-case 126% overrun applied to *every* move, the clock parks and never
+reaches zero at any SAFETY tested:
+
+      SAFETY 0.85 -> parks at 4.7 s      SAFETY 1.25 -> parks at 1.5 s
+      SAFETY 1.10 -> parks at 1.7 s      SAFETY 1.40 -> parks at 1.3 s
+
+So there is no SAFETY in this range that can lose on time. This agrees with 25 rated games in which
+every decisive result, won or lost, came by checkmate -- not one flag, not one adjudication.
+
+### Shipped
+
+Cherry-picked onto the mainline: pondering removed (`ca526a3`) and SAFETY 1.10 (`087ad52`).
+
+### Where the clock work stops
+
+Time management is done. Everything remaining in it is under 9 Elo and unmeasurable at our error
+bars. The next lever is the draw score: `engine/search.py` returns a hard `I32(0)` for repetition and
+the fifty-move rule, with no contempt anywhere. Across rounds 15-39 we are 16-5-5, and all five draws
+came from equal positions -- three by liquidation to insufficient material, two by repetition. A
+draw against this field is worth less to us than a messy equal position, and the code cannot express
+that.

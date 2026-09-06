@@ -42,7 +42,14 @@ MOVE_OVERHEAD_MS = 60.0
 # Underspending is not cheap. Halving our thinking time costs 52.5 +- 20.1 Elo (run 34033781905),
 # right on the classical 50-80 per doubling. And we were not spending 0.85 of the allowance, we were
 # spending 0.85 x 0.88 = 0.75, because the search consumes only 88% of the budget handed to it.
-# Recovering that quarter is 0.42 doublings, about 22 Elo.
+#
+# But recovering that quarter buys far less than the per-move ratio suggests, and it is worth being
+# precise about why, because the naive reading predicted 22 Elo and the measurement came back at
+# +6.9 +- 17.7 (run 34038018046). The clock is a closed loop. Total thinking time in a game cannot
+# exceed 120 s + 0.5 s per move however the allowance is scaled, and at 0.85 we already spent 87%
+# of that ceiling -- so 1.29x the per-move budget is only 1.07x the game. At 52.5 Elo per halving
+# that is +5.3 Elo over a typical 87-move game, which is what was measured. The whole remaining
+# headroom, all the way out to SAFETY 1.40, is under 9 Elo. This knob is finished.
 #
 # Overspending is also not the cliff it sounds like, because the budget is capped at a quarter of
 # the clock. Worst case the search takes 126% of its budget, so worst spend is 0.25 x SAFETY x 1.26
