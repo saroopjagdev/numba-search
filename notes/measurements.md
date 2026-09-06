@@ -1584,3 +1584,68 @@ This measures the Elo cost of a halving, which calibrates the whole workstream a
 Note the high draw rate, 287 of 400 at 72%, which is what holds the error bars at +-18 Elo on a
 400-game run. Self-play between near-identical builds at a slow control draws heavily; resolving
 below about 15 Elo needs a different design, not more games.
+
+## 6 Sep -- thinking time is worth 52.5 Elo per halving, and pondering was hiding it
+
+Two runs, and the difference between them is the whole lesson.
+
+      candidate                          baseline      Elo            verdict
+      half time, WITH pondering          8897b43       +1.7 +- 17.5   inconclusive, run 34028870199
+      half time, pondering REMOVED       ca526a3      -52.5 +- 20.1   REJECTED, LLR -8.91, run 34033781905
+
+Same constant, halved, in both. The first says thinking time is free. The second says it is worth
+52.5 Elo a halving, sitting exactly on the classical 50-80 per doubling.
+
+`MAX_PONDER_MS` is 120 s, so the ponder search ran for the entire opponent turn no matter what
+`SAFETY` said, into a shared table. Halving the budget therefore halved only the on-clock half of
+the thinking and left the off-clock half untouched -- roughly a 25% cut in total compute rather than
+50%, which +-17.5 Elo cannot see. The experiment was not measuring the thing its name said.
+
+### The confound reaches backwards
+
+Every clock experiment this week ran with pondering on, so every one of them understated the
+difference between clock policies -- a policy change only moves the on-clock share, and the
+off-clock share was large and constant.
+
+| change | Elo as measured | status |
+|---|---|---|
+| absolute reserve | -65.9 +- 21.6 | rejected; true cost is *worse* than this |
+| proportional reserve | -55.2 +- 18.1 | rejected; true cost is *worse* than this |
+| flat profile | -0.9 +- 18.1 | **null is unreliable, needs redoing without pondering** |
+
+The two rejections survive -- compression toward zero cannot flip a sign, and they were already
+rejected. The flat profile's null does not survive: a null is exactly what a compressing confound
+manufactures. "Redistribution across the game is worth zero" is back to being an open question.
+
+### What the number says the waste is worth
+
+      SAFETY 0.85 x consumption 0.88 = 0.75 of the allowance actually spent
+      recovering it = log2(1/0.75) = 0.42 doublings = 22 Elo
+
+      observed leftover in rounds 34-36, 28-35 s of ~152 s = 0.78 spent
+      recovering it = 0.36 doublings = 19 Elo
+
+So roughly 20 Elo is sitting on the table, and it is worth the rest of the week. That claim has been
+made three times this week on no evidence; this is the first time it rests on a measurement.
+
+### And overspending is not the cliff the code claimed
+
+`SAFETY`'s comment called the asymmetry brutal -- overspend once and lose outright. That is wrong,
+because the budget is capped at a quarter of the clock. Worst-case spend is 0.25 x SAFETY x 1.26,
+and setting that equal to the 500 ms increment gives the clock at which the engine stops draining:
+
+      SAFETY 0.85 -> parks at 1.93 s
+      SAFETY 0.95 -> parks at 1.73 s
+      SAFETY 1.10 -> parks at 1.50 s
+      SAFETY 1.25 -> parks at 1.33 s
+
+Raising SAFETY moves the parking point and nothing else. It cannot produce a flag, because below the
+parking clock the budget is under the increment and the clock rises again. The 0.85 was protecting
+against a failure the cap already makes impossible.
+
+### In flight
+
+Run 34038018046, `no-ponder-safety110` vs `ca526a3`, 400 games, 120 s + 0.5 s, seed 59. SAFETY 0.85
+-> 1.10, chosen so that 1.10 x 0.88 = 0.97: the point is to spend the allowance rather than 88% of
+it. Predicted +22 Elo, and unlike the last three clock experiments the prediction comes from a
+measured quantity rather than from an argument.
