@@ -7,6 +7,18 @@ below is not optional politeness -- it is the point of module scope. Compiling l
 
 Everything here is a wrapper. The engine is in `engine/`; this file's job is the clock, the
 python-chess legality guard, and making sure no exception can ever reach the protocol.
+
+**There is deliberately no pondering here, and it must not be added back on the strength of a
+local measurement.** `AGENTS.md:33` says the process keeps its core while the opponent thinks; that
+line is a stale copy of a rule that has since changed, and the file itself warns that the two URLs
+are canonical. Both canonical documents now say the opposite -- "your process is suspended on
+opponent's turn, background threads won't run" and "work you leave running between own moves not
+run". Nothing of ours executes between our moves.
+
+The trap is that our harness does not suspend anything, so a ponder thread runs perfectly well
+locally and SPRT scored it at +63.2 +- 23.8 Elo. That Elo cannot occur in a rated game. Any future
+run will report the same phantom gain, so this is the one decision in the project that measurement
+must not be allowed to overturn -- the instrument is wrong here, not the reasoning.
 """
 
 import time
@@ -14,7 +26,6 @@ import time
 import chess
 import numpy as np
 
-from engine.ponder import Ponderer
 from engine.position import move_to_uci
 from engine.search import Searcher
 
@@ -34,7 +45,6 @@ SAFETY = 0.85
 ASSUMED_MOVES_LEFT = 30
 
 _searcher = Searcher()
-_ponderer = Ponderer(_searcher)
 _last_fullmove = 10**9
 
 
@@ -74,11 +84,6 @@ def get_move(fen: str, time_left_ms: int) -> str:
     """
     global _last_fullmove
     started = time.perf_counter()
-    # Before anything else, and outside the guard below, because everything after this point either
-    # uses the engine or is the fallback that still has to be fast. We have one core: a ponder
-    # search left running would halve the speed of the search that has to produce this move, which
-    # costs far more than pondering ever wins. `stop()` cannot raise, for the same reason.
-    _ponderer.stop()
     board = chess.Board(fen)
 
     try:
@@ -99,11 +104,6 @@ def get_move(fen: str, time_left_ms: int) -> str:
         # an instant loss and python-chess is an independent implementation, so the cost of asking
         # it is worth paying on every single move.
         if chess.Move.from_uci(uci) in board.legal_moves:
-            # Think on their clock. Started before returning rather than after, because there is no
-            # "after" -- the platform calls us again and nothing of ours runs in between. The cost
-            # charged to our clock is one thread start, tens of microseconds.
-            board.push(chess.Move.from_uci(uci))
-            _ponderer.start(board.fen())
             return uci
         print(f"engine proposed an illegal move {uci} in {fen}; falling back")
     # Deliberately bare: anything escaping this function forfeits the game, so there is no class
