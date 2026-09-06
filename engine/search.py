@@ -705,43 +705,6 @@ def negamax(
         flag = move_flag(move)
         quiet = not ((flag & CAPTURE_BIT) or (flag & PROMO_BIT))
 
-        # Late move pruning. Once a node has tried the transposition move, the good captures, the
-        # killers and a handful of quiets, the remaining quiets are ordered by history alone and
-        # almost never best. Near the leaves the cheapest thing to do with them is nothing.
-        #
-        # The bound grows quadratically so it only ever bites where a mistake is cheap to repair:
-        # at depth 1 it keeps five quiets, at depth 4 twenty, and above depth 4 it does not apply
-        # at all. Guarded on `best_score` so a node that has found nothing but losses -- where the
-        # move it needs may well be ordered last -- keeps searching.
-        if (
-            quiet
-            and legal > 0
-            and not checked
-            and depth <= 4
-            and best_score > -MATE_THRESHOLD
-            and legal >= 4 + depth * depth
-        ):
-            continue
-
-        # Losing captures near the leaves. `_score_moves` has already run the swap-off on the
-        # ambiguous ones, so the verdict is sitting in the ordering score and costs nothing to
-        # read back: among non-quiet moves only the demoted ones score below zero, since every
-        # other category -- transposition move, winning capture, promotion -- is built on a large
-        # positive base. Quiets are excluded above, so history's range cannot reach in here.
-        #
-        # Depth-limited rather than unconditional because a losing capture deeper in the tree is
-        # often a real sacrifice with compensation the search can still find; at depth 2 or less
-        # there is no room left to find it, so the subtree only confirms the loss.
-        if (
-            not quiet
-            and legal > 0
-            and not checked
-            and depth <= 2
-            and best_score > -MATE_THRESHOLD
-            and scores[offset + index] < I32(0)
-        ):
-            continue
-
         # Futility: a quiet move at shallow depth that cannot lift a hopeless static score into
         # the window. Never applied to the first move, so a node always searches something.
         if (
