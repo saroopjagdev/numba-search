@@ -1433,3 +1433,26 @@ good moves and sixty bad ones.
 
 `tools/clock_fuzz.py` is kept on the shipping branch even though the commit that introduced it is
 reverted. The instrument is not the change it was written for.
+
+### In flight: a flat profile instead of a bigger budget
+
+Run 34024644133, seed 31, `clock-flat-profile` vs `8897b43` at 120s + 0.5s. Plans the clock out to
+an expected final fullmove rather than dividing by a constant, so the divisor shrinks with the clock
+and the profile flattens.
+
+Simulated over a full-length game at the fuzzer's measured 109% consumption:
+
+      fullmove    old div30    flat mtg
+             8      3717 ms     1529 ms
+            20      2695        1544
+            40      1653        1578
+            60      1096        1626
+            80       799        1712
+            95       671        1074
+           105       614         842
+      left at 105   10.3 s       9.9 s
+
+Both finish with about ten seconds, so this is a redistribution and not another attempt to spend
+more -- which is the point, given that spending more has now been rejected twice. It is the direct
+test of the claim the two rejections imply: that in an 80-100 move game an even profile beats a
+front-loaded one.
