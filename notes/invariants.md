@@ -74,6 +74,22 @@ The never-break list. If a change would violate one of these, the change is wron
   checking, so an out-of-range index is a silent out-of-bounds write and a segfault, not an
   `IndexError`. Two of these shipped in one afternoon: a transposition-table mask taken from a
   module constant instead of the array's shape, and a check extension with no ply ceiling.
+- **The ponder thread is stopped and joined before any real search starts, and the join has no
+  timeout.** `get_move` does this first, outside its own try, because everything after that point
+  either uses the engine or is the fallback that has to be fast. We have one core: two searches
+  sharing it halve each other, which costs far more than pondering ever wins, so continuing while
+  a ponder is still running is worse than never pondering at all. `Ponderer.stop` cannot raise.
+- **The ponder searcher shares the transposition table and the network, and nothing else.** Sharing
+  mutable scratch -- killers, history, the move stack, the accumulator -- corrupts both searches.
+  The table is deliberately unlocked, which is safe only because a stored move is used to *order*
+  moves the generator has already produced, so a torn entry can never introduce an illegal move.
+  The root move travels out through `control` for the same reason. Do not start reading moves
+  straight from the table.
+- **Static exchange evaluation is asked only about plain captures.** `see_ge` assumes the victim
+  stands on the target square and that the attacker's value does not change mid-exchange; en
+  passant breaks the first and promotions break the second. Every call site guards on both. It
+  models no pins, which is conservative rather than wrong -- it declines to prune some captures
+  that are good, and never prunes one that is bad to prune.
 - **perft is exact before any search work is trusted.** startpos perft(6) = 119,060,324.
 - **Re-run `tools/jit_timing.py` after any change to a jitted function.** Compile time creeps
   invisibly and then loses every game at once.
