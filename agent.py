@@ -35,9 +35,24 @@ from engine.search import Searcher
 # independently of it. This is the deduction taken off every budget before we even start thinking.
 MOVE_OVERHEAD_MS = 60.0
 
-# Fraction of what is theoretically affordable that we actually spend. The asymmetry is brutal:
-# overspending once loses the game outright, underspending costs a few centipawns of depth.
-SAFETY = 0.85
+# Fraction of what is theoretically affordable that we actually spend. The asymmetry used to be
+# stated as brutal -- overspend once and lose outright, underspend and lose a few centipawns -- and
+# that framing was wrong in both halves.
+#
+# Underspending is not cheap. Halving our thinking time costs 52.5 +- 20.1 Elo (run 34033781905),
+# right on the classical 50-80 per doubling. And we were not spending 0.85 of the allowance, we were
+# spending 0.85 x 0.88 = 0.75, because the search consumes only 88% of the budget handed to it.
+# Recovering that quarter is 0.42 doublings, about 22 Elo.
+#
+# Overspending is also not the cliff it sounds like, because the budget is capped at a quarter of
+# the clock. Worst case the search takes 126% of its budget, so worst spend is 0.25 x SAFETY x 1.26
+# of the clock, and that equals the 500 ms increment at a 1.50 s clock: below there the clock rises
+# again. The engine parks at a low clock, it does not flag. Raising SAFETY moves that parking point
+# from 1.93 s to 1.50 s and nothing else.
+#
+# 1.10 rather than 1.00 because 1.10 x 0.88 = 0.97 -- the point is to actually spend the allowance,
+# not to spend 88% of it.
+SAFETY = 1.10
 
 # Assumed moves remaining. The referee adjudicates at ply 300, so a game is at most 150 moves each,
 # but spreading the base clock over 150 would leave the engine playing far too fast in the opening
