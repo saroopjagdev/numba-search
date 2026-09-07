@@ -2072,3 +2072,27 @@ The rule this buys: **any timing taken while an arena is running is worthless.**
 baseline back to back rather than comparing against a number from earlier in the day. The
 specialisation counts were what settled it -- a structural check that load cannot distort, where
 the wall-clock comparison could not.
+
+### The claim guard is shipped unmeasured, and why that is the right call
+
+The SPRT comparing `4cec419` against `c0ac5f8` could not be run. Three attempts (concurrency 4, 2
+and 1) were all killed by the OS for low memory before a single game completed. The machine has
+8 GB total with ~900 MB free; a numba agent peaks around 1 GB during LLVM compilation and a game
+needs two of them. This is not a tunable -- it needs applications closed, which is a user action.
+
+Shipping anyway, because the three changes carry very different risk:
+
+- **ep hashing** and **drawn material** are proved, not estimated. 11939/0 key agreement with
+  perft still correct, and `audit_truth.py` 12/12 with byte-identical node counts where the
+  predicate does not fire. An arena could only add noise to a settled question.
+- **The claim guard** is unproven but bounded. It is gated behind an exact occurrence count, so it
+  can only fire on a move that genuinely reaches a twice-seen position -- and by the referee's
+  actual rule such a move *is* a draw, so scoring it 0 is right rather than pessimistic.
+
+The known open question is the opposite of dangerous: in round 27's position the guard fires but
+the root still selects a conceding move, which means it may be **under**-firing. An under-firing
+guard is a benefit not yet collected, not a regression. Suspicion is that the one observed ply-1
+firing belongs to a null-move child rather than the `a6a8` line; unconfirmed.
+
+Re-run the SPRT when the machine is quiet. Verified `submission.zip` (291 459 bytes, 1 MB
+unzipped) is at the repo root, extracted and won its game from the extraction.
