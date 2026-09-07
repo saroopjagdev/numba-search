@@ -2119,3 +2119,32 @@ context compaction, and a compaction summary will carry an in-flight *command* w
 *practice* that chose it. So: when resuming after a compaction, read this file before continuing an
 inherited run, not only when appending to it. An instrument that answers "how do we do this" is
 useless if it is only ever written to.
+
+## 7 Sep -- ep hashing + drawn material + claim guard: +15.6 +- 21.1, and shipped
+
+Run 34101402252, 400 games at 30 s + 0.125 s across 20 shards, seed 7. Candidate `4cec419`
+(HEAD of `worktree-phase0-instruments`) against baseline `c0ac5f8`, so the group under test is the
+en-passant Zobrist fix plus the referee-claim guard and its two supporting history fixes. The
+drawn-material change is in both arms and is *not* measured here.
+
+    INCONCLUSIVE  +86 =246 -68   LLR +1.06  in [-2.94, 2.94]
+    Elo +15.6 +- 21.1
+
+**Shipped.** The interval is roughly [-5, +37] and includes zero, so this is not evidence the group
+helps. It is, however, evidence it does not hurt, and that is all the measurement was ever able to
+add: two of the three changes are correct by proof rather than by estimate -- 11939/0 key agreement
+with perft still exact, and `audit_truth.py` 12/12 -- so no arena result would have argued for
+reverting them. The guard is bounded by construction: it fires only on a move that genuinely
+reaches a twice-seen position, and by the referee's rule such a move already *is* a draw.
+
+**Not chasing significance.** Resolving +-21 down to +-10 needs roughly four times the games,
+~1200 runner-minutes, over half the monthly allowance -- and it could not change the decision,
+because the ep fix ships at -5 Elo too. Batches do not pool, so a second run at a new seed is
+replication, not extra sample size. This is the diminishing-returns stop.
+
+**246 draws in 400 games (61.5%) is the number worth noticing.** That is a high draw rate for
+30 s + 0.125 s from curated near-level openings, and it caps the Elo any change can demonstrate at
+this time control -- a draw-heavy sample is a low-information sample. Whether the claim guard is
+itself converting would-be wins into early draws, or the openings are simply too balanced, is not
+answerable from this run. If future measurements keep landing inconclusive with this draw rate, the
+opening set is the thing to change, not the game count.
