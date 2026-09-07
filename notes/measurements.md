@@ -2050,3 +2050,25 @@ Both bugs are of the same shape as the insufficient-material one: the engine was
 wrong about something fixed by rule, and no amount of arena play would have said so. SPRT
 answers "is this change better". It cannot answer "is this correct". Those need separate
 instruments, and `tools/audit_truth.py` is where cases of the first kind go.
+
+### Init after the above, and a warning about measuring under load
+
+| build | init |
+|---|---|
+| `c0ac5f8` (before ep fix + claim guard) | 25.1 s |
+| `4cec419` (after) | 22.2 s, 23.0 s |
+
+Comfortably inside the 60 s target. The repetition work costs no measurable compile time:
+`negamax` has 3 specialisations and `quiescence` 2 both before and after, so nothing gained an
+accidental second type specialisation.
+
+**But the first three numbers I took were 84 s, 57.8 s and 25.1 s, and I briefly believed the
+change had tripled init.** All three were taken while a SPRT was running with concurrency 4 and
+then while its orphaned workers were dying. On a 8-core box, 12 extra busy processes roughly
+doubled a compile-bound measurement.
+
+The rule this buys: **any timing taken while an arena is running is worthless.** Check
+`ps -W | grep -c python` before trusting an init or nps figure, and always measure candidate and
+baseline back to back rather than comparing against a number from earlier in the day. The
+specialisation counts were what settled it -- a structural check that load cannot distort, where
+the wall-clock comparison could not.
