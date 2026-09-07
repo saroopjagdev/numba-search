@@ -126,6 +126,9 @@ def get_move(fen: str, time_left_ms: int) -> str:
         # an instant loss and python-chess is an independent implementation, so the cost of asking
         # it is worth paying on every single move.
         if chess.Move.from_uci(uci) in board.legal_moves:
+            # The position this leads to has the opponent to move, and we are never shown it. It
+            # goes into the history here or the repetition check spends the game half blind.
+            _searcher.record_move(np.int32(move))
             return uci
         print(f"engine proposed an illegal move {uci} in {fen}; falling back")
     # Deliberately bare: anything escaping this function forfeits the game, so there is no class
@@ -135,4 +138,7 @@ def get_move(fen: str, time_left_ms: int) -> str:
         print(f"search failed after {elapsed:.0f}ms: {type(error).__name__}: {error}")
 
     # Last resort. Any legal move beats a crash or a forfeit, and this path costs microseconds.
+    # The history cannot record this move, so drop it rather than leave a gap the repetition walk
+    # would misread as a run of consecutive plies.
+    _searcher.forget_history()
     return next(iter(board.legal_moves)).uci()

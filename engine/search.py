@@ -361,6 +361,38 @@ def _pick_best(moves: np.ndarray, scores: np.ndarray, offset: Int, count: Int, s
     return start
 
 
+@njit("int64(uint64[:], int64[:], uint64, int64, uint64[:], int64)", cache=False, nogil=True)
+def _occurrences(
+    path: np.ndarray,
+    state: np.ndarray,
+    candidate: np.uint64,
+    ply: Int,
+    game_keys: np.ndarray,
+    game_count: Int,
+) -> Int:
+    """How many times `candidate` has already appeared, in the search path and then the game.
+
+    Distinct from `_is_repetition` in that the exact number matters: the referee's claim needs a
+    position to have occurred *twice* already, where a draw score needs only once. Counts the same
+    positions in the same order; only the stopping condition differs.
+    """
+    total = 0
+    limit = state[HALFMOVE]
+    back = 2
+    while back <= limit:
+        if back <= ply:
+            probe = path[ply - back]
+        else:
+            index = game_count - (back - ply)
+            if index < 0:
+                return total
+            probe = game_keys[index]
+        if probe == candidate:
+            total += 1
+        back += 2
+    return total
+
+
 @njit("boolean(uint64[:], int64[:], uint64[:], int64, uint64[:], int64)", cache=False)
 def _is_repetition(
     path: np.ndarray,
@@ -376,12 +408,19 @@ def _is_repetition(
     and only notice one ply too late. Requiring two is the standard trade: it occasionally scores
     a position as drawn that could still be won, and it never misses a real repetition.
 
-    The scan continues past the root into `game_keys`, the positions the agent has already been
-    asked to move in. That matters because `harness/play.py` calls `board.outcome(claim_draw=True)`
-    -- the referee claims threefold *for* us, so an engine that only remembers its own search can
-    shuffle a won game into a draw and never see it coming. Those positions all have us to move,
-    i.e. they sit at even offsets from the root, which is why the walk only reaches for them when
-    `ply` is even; at odd plies the repeating positions are the opponent's and were never observed.
+    The scan continues past the root into `game_keys`, every position of the game so far, one per
+    ply. That matters because `harness/play.py` calls `board.outcome(claim_draw=True)`, and
+    python-chess claims on `can_claim_threefold_repetition()` -- which fires on the *second*
+    occurrence the moment a legal move exists that would produce a third. The draw therefore
+    arrives a full move earlier than counting to three would suggest, and the referee claims it
+    for us whether we wanted it or not.
+
+    `game_keys` used to hold only the positions we were asked to move in, one every two plies, and
+    the walk gave up at odd plies because the opponent's positions had never been observed. That
+    left us blind to repetitions of opponent-to-move positions, which is precisely the class an
+    opponent uses to draw against us: rounds 27 and 30 were both drawn that way, from +202 and
+    +650, by an opponent move we never saw coming. `Searcher.record_move` now supplies the missing
+    plies, so there is no parity case left.
     """
     current = key[0]
     # Only positions since the last irreversible move can repeat, so the halfmove clock bounds it.
@@ -391,9 +430,7 @@ def _is_repetition(
         if back <= ply:
             candidate = path[ply - back]
         else:
-            if ply % 2 == 1:
-                return False
-            index = game_count - (back - ply) // 2
+            index = game_count - (back - ply)
             if index < 0:
                 return False
             candidate = game_keys[index]
@@ -531,7 +568,7 @@ def quiescence(
     "int32(uint64[:], int8[:], int64[:], uint64[:], int64[:, :], uint64[:], int32[:], int32[:],"
     " int16[:, :, :], int16[:, :], int16[:, :], int32[:],"
     " uint64[:], int32[:], int32[:], int16[:], int8[:], int32[:, :], int32[:, :], uint64[:],"
-    " uint64[:], int64, int64, int64, int32, int32, boolean, boolean, int64[:])",
+    " uint64[:], int64, uint64, int64, int64, int32, int32, boolean, boolean, int64[:])",
     cache=False,
     # Releases the GIL for the whole call, which is what makes pondering possible: the main thread
     # has to be able to run Python -- to accept the next `get_move` and stop us -- while a ponder
@@ -568,6 +605,7 @@ def negamax(
     path: np.ndarray,
     game_keys: np.ndarray,
     game_count: Int,
+    claim_mask: np.uint64,
     ply: Int,
     depth: Int,
     alpha: np.int32,
@@ -682,7 +720,7 @@ def negamax(
             bb, mailbox, state, key, undo, keys, moves, scores,
             acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
             tt_depth, tt_bound, killers, history, path,
-            game_keys, game_count, ply + 1, depth - 1 - reduction,
+            game_keys, game_count, claim_mask, ply + 1, depth - 1 - reduction,
             -beta, -beta + I32(1), False, use_nnue, control,
         )
         # fmt: on
@@ -730,6 +768,27 @@ def negamax(
         if is_attacked(bb, king_square, 1 - side):
             unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
             continue
+
+        # The referee does not wait for a third occurrence. `referee.py:59` calls
+        # `board.outcome(claim_draw=True)`, and python-chess claims as soon as the side to move
+        # *has a legal move* reaching a position that has already occurred twice -- whether or not
+        # they would ever play it. Merely standing here ends the game, and the fact that we are
+        # winning and would obviously choose something else does not matter. Round 27 was drawn
+        # from +202 exactly this way, on a board holding no threefold at all.
+        #
+        # So if any move reaches a twice-seen position, the whole node is a draw, however good the
+        # alternatives look. `claim_mask` is a 64-bit membership sketch of the game history keyed
+        # on the low six bits; it is wrong only in the direction of a false positive, and a miss
+        # costs one shift and one test, which is what keeps this out of the hot path. The exact
+        # count runs on the roughly one node in sixty-four that gets through.
+        if (
+            ply > 0
+            and (claim_mask >> (key[0] & np.uint64(63))) & np.uint64(1)
+            and _occurrences(path, state, key[0], ply + 1, game_keys, game_count) >= 2
+        ):
+            unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
+            return I32(0)
+
         legal += 1
         if use_nnue:
             push(acc, transformer, mailbox, ply, move, undo[ply, 0], side)
@@ -750,7 +809,7 @@ def negamax(
                 bb, mailbox, state, key, undo, keys, moves, scores,
                 acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                 tt_depth, tt_bound, killers, history, path,
-                game_keys, game_count, ply + 1, depth - 1,
+                game_keys, game_count, claim_mask, ply + 1, depth - 1,
                 -beta, -alpha, True, use_nnue, control,
             )
         else:
@@ -760,7 +819,7 @@ def negamax(
                 bb, mailbox, state, key, undo, keys, moves, scores,
                 acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                 tt_depth, tt_bound, killers, history, path,
-                game_keys, game_count, ply + 1, depth - 1 - reduction,
+                game_keys, game_count, claim_mask, ply + 1, depth - 1 - reduction,
                 -alpha - I32(1), -alpha, True, use_nnue, control,
             )
             if score > alpha and reduction > 0:
@@ -768,7 +827,7 @@ def negamax(
                     bb, mailbox, state, key, undo, keys, moves, scores,
                     acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                     tt_depth, tt_bound, killers, history, path,
-                    game_keys, game_count, ply + 1, depth - 1,
+                    game_keys, game_count, claim_mask, ply + 1, depth - 1,
                     -alpha - I32(1), -alpha, True, use_nnue, control,
                 )
             if score > alpha and score < beta:
@@ -776,7 +835,7 @@ def negamax(
                     bb, mailbox, state, key, undo, keys, moves, scores,
                     acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                     tt_depth, tt_bound, killers, history, path,
-                    game_keys, game_count, ply + 1, depth - 1,
+                    game_keys, game_count, claim_mask, ply + 1, depth - 1,
                     -beta, -alpha, True, use_nnue, control,
                 )
         # fmt: on
@@ -888,6 +947,9 @@ class Searcher:
         # cap so it cannot overflow in a legal game.
         self.game_keys = np.zeros(512, dtype=np.uint64)
         self.game_count = 0
+        # Membership sketch of every position this game has visited, keyed on the low six bits
+        # of the Zobrist key. The search consults it before paying for an exact repetition count.
+        self.claim_mask = np.uint64(0)
         # Measured nps, used only to convert remaining time into a node budget. Starts pessimistic
         # so the first move of a game cannot overshoot; one iteration replaces it with the truth.
         self.nps = 200_000.0
@@ -922,15 +984,52 @@ class Searcher:
     def record_position(self) -> None:
         """Append the current position to the game history the repetition check reads.
 
-        Called once per move, before searching. A FEN with a halfmove clock of zero means the last
-        move was irreversible, so nothing before it can repeat and the history is dropped -- which
-        also keeps the array from filling up in a long game.
+        Called before searching, and again through `record_move` for the position our reply leads
+        to, so the history holds every ply rather than every other one. A halfmove clock of zero
+        means the last move was irreversible, so nothing before it can repeat and the history is
+        dropped -- which also keeps the array from filling up in a long game.
         """
         if self.state[HALFMOVE] == 0:
             self.game_count = 0
         if self.game_count < self.game_keys.shape[0]:
             self.game_keys[self.game_count] = self.key[0]
             self.game_count += 1
+        self._refresh_claim_mask()
+
+    def _refresh_claim_mask(self) -> None:
+        """Rebuild the membership sketch the search tests before counting occurrences.
+
+        Rebuilt rather than updated because the history is dropped on every irreversible move, and
+        a mask can have bits set but never cleared. It is at most a hundred cheap operations once
+        per ply.
+        """
+        mask = np.uint64(0)
+        for i in range(self.game_count):
+            mask |= np.uint64(1) << (self.game_keys[i] & np.uint64(63))
+        self.claim_mask = mask
+
+    def record_move(self, move: np.int32) -> None:
+        """Append the position our own move leads to -- one with the opponent to move.
+
+        These plies are never handed to us: we see the position before our move and the position
+        after the opponent's reply, so without this the history skips every odd ply and the
+        repetition check cannot see a repetition the opponent is steering towards. Ply slot 0 of
+        the undo stack is free here because this runs between searches, never inside one.
+        """
+        make_move(self.bb, self.mailbox, self.state, self.key, self.undo, self.keys, 0, move)
+        self.record_position()
+        unmake_move(self.bb, self.mailbox, self.state, self.key, self.undo, self.keys, 0, move)
+
+    def forget_history(self) -> None:
+        """Drop the game history after a move we could not record.
+
+        A gap in `game_keys` is worse than no history at all: the walk counts back one entry per
+        ply, so a missing ply shifts every older entry and the check compares against positions
+        that never occurred. Forgetting only risks missing a repetition; keeping a gap risks
+        inventing one and throwing away a won game.
+        """
+        self.game_count = 0
+        self.claim_mask = np.uint64(0)
 
     def new_game(self) -> None:
         """Clear everything that could carry over between games."""
@@ -970,7 +1069,8 @@ class Searcher:
             self.bb, self.mailbox, self.state, self.key, self.undo, self.keys, self.moves,
             self.scores, self.acc, self.network.transformer, self.network.output,
             self.network.output_bias, *self.tt, self.killers, self.history, self.path,
-            self.game_keys, history_count, 0, depth, I32(alpha), I32(beta), True,
+            self.game_keys, history_count, self.claim_mask,
+            0, depth, I32(alpha), I32(beta), True,
             self.use_nnue, self.control,
         )
         # fmt: on
