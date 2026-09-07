@@ -2315,3 +2315,53 @@ A/B.** It is the only remaining lever with a measured reason to believe in it, i
 per second at match time, and the shards are already on disk at `C:/Users/ssjag/chessdata/shards/`.
 Feature freeze is Wednesday night, which leaves one Colab run and one CI SPRT -- enough for exactly
 one attempt, so it should be the longest run that fits rather than several short ones.
+
+### 8 Sep -- the SPRT control was wrong, and by more than "a bit faster"
+
+Follow-up to the increment mismatch noted yesterday, prompted by the right question: should the
+SPRT run at 120s? Yes. The mismatch is not a detail.
+
+`agent._budget_ms` banks a hardcoded `0.75 * 500` ms of increment every move. It has to be
+hardcoded, because `get_move(fen, time_left_ms)` is never told the increment -- the clock is the
+only thing the platform hands us. At the rated 120000/500 that constant is correct. At the
+30000/125 the SPRT defaulted to, the assumed increment is **three times** the real one, which is
+enough to remove the clock's positive parking point entirely: the base-clock term decays
+geometrically while a constant larger than the increment is subtracted every move.
+
+Simulated over 71 moves, replicating `_budget_ms` and assuming the measured 88% budget usage. The
+rated column is validated against round 59, whose log reports a 4.8s slowest move and 17.3s left:
+
+    control          move 20    move 40    move 60    clock at end   slowest
+    120000 / 500      63.4s      34.1s      18.9s        13.9s         4.3s
+     30000 / 125      11.2s       1.4s       0.3s         0.3s         1.4s
+     30000 / 500      16.7s       9.9s       6.3s         5.1s         1.4s
+
+At the rated control the engine has 18.9s at move 60 and spends about 1s a move. At the control we
+were testing on it has 0.3s and spends **0.07s** -- a seventieth of the thinking time. Every SPRT
+we have run played its second half at effectively zero search depth.
+
+Two consequences, and they are different sizes:
+
+- **Past verdicts mostly survive.** Both sides ran identical time management and, in the width
+  sweep, identical evaluation speed, so the distortion is common-mode and cancels in the difference.
+  The signs are probably right. The absolute Elo figures are not measurements of our ladder.
+- **The clock results specifically do not survive as measurements.** SAFETY at +6.9 +- 17.7 (run
+  34038018046) was a clock experiment run on a clock that behaves nothing like the rated one. The
+  conclusion still stands, but on the closed-loop arithmetic in `agent.py`, which is not empirical
+  -- not on that run. No future clock experiment should be read off a 125 ms increment.
+
+It also matters for what we are about to test. A better-trained evaluation should show up most in
+quiet positions with time to search them, which is exactly the phase the old control deleted. A
+30000/125 SPRT would have understated a better net. It may also explain the 61.5% draw rate flagged
+after run 34101402252, which is far above the 27% we see on the ladder.
+
+**Fixed by changing the workflow defaults to 120000 / 500**, not by changing `agent.py`: the
+hardcoded 500 is right for the competition and the rated logs confirm the control. The third row
+above shows the increment is the dominant term -- correcting it alone recovers most of the sanity --
+but there is no reason to accept a known bias when the real control is affordable.
+
+It is affordable because **runner minutes are free**: the repository is public for the competition,
+and `/actions/runs/34101402252/timing` reports `billable.UBUNTU.total_ms = 0`. The only cost is wall
+time, roughly 3.7x the thinking time per game, so about 2.5 hours for 400 games across 20 shards
+against the 40.7 minutes the last run took. That is an overnight job, not a budget problem. Worth
+remembering the repository goes private again on 12 Sep, at which point minutes start counting.

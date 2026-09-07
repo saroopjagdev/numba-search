@@ -21,12 +21,25 @@ on:
       shards:
         description: parallel runners (20 is the free-tier concurrency limit)
         default: "20"
+      # Defaults are the real rated control, and shipping decisions must be taken at it.
+      #
+      # `agent._budget_ms` cannot be told the increment -- `get_move` is handed only the clock --
+      # so it banks a hardcoded 0.75 x 500 ms every move. That is correct at 120000/500 and badly
+      # wrong at the 30000/125 these used to default to, where the assumed increment is three times
+      # the real one and the clock has no positive parking point. Simulated over 71 moves, checked
+      # against round 59: at 120000/500 the engine holds 18.9s at move 60 and thinks ~1s a move; at
+      # 30000/125 it is down to 0.3s and thinking 0.07s. Half of every game was played at a
+      # seventieth of the thinking time the ladder actually gives us.
+      #
+      # A shorter base is still fine for screening a change that is obviously right or obviously
+      # broken. It is not fine for the measurement a net ships on. Runner minutes are free while
+      # this repository is public, so the only cost of the real control is wall time.
       base_ms:
-        description: clock per side; 120000 is the real one
-        default: "30000"
+        description: clock per side; 120000 is the real one, use less only for screening
+        default: "120000"
       increment_ms:
-        description: increment per move; 500 is the real one
-        default: "125"
+        description: increment per move; 500 is the real one and agent.py assumes it
+        default: "500"
       elo0:
         description: "H0: the candidate is no better"
         default: "0"
