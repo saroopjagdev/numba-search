@@ -2096,3 +2096,26 @@ firing belongs to a null-move child rather than the `a6a8` line; unconfirmed.
 
 Re-run the SPRT when the machine is quiet. Verified `submission.zip` (291 459 bytes, 1 MB
 unzipped) is at the repo root, extracted and won its game from the extraction.
+
+### Correction: that SPRT was not blocked, it was run in the wrong place
+
+The entry above is wrong and is left standing only because this log is append-only. The claim-guard
+SPRT was never blocked on machine memory or on anything the user needed to do. It was run locally,
+which stopped being the practice on 5 Sep -- see "the SPRT moves to CI" above, and the pondering
+measurement on 6 Sep, both of which used the 20-shard workflow.
+
+Local was tried at concurrency 4, then 2, then 1, and each was killed for low memory. That outcome
+was already recorded in "the clock SPRT was killed by the machine, not by the result" on 5 Sep,
+including the ~340 MB-per-agent figure and the one-concurrent-game cap. The constraint was not
+discovered here; it was rediscovered, at the cost of three dead runs and a false blocker reported
+to the user.
+
+Dispatched properly as run 34101402252: HEAD against `c0ac5f8`, 400 games at 30 s + 125 ms across
+20 shards, seed 7.
+
+**The process failure is the point, and it is not about memory.** `notes/measurements.md` was
+edited four times during that session and read zero times. It exists so that practice survives
+context compaction, and a compaction summary will carry an in-flight *command* without the
+*practice* that chose it. So: when resuming after a compaction, read this file before continuing an
+inherited run, not only when appending to it. An instrument that answers "how do we do this" is
+useless if it is only ever written to.
