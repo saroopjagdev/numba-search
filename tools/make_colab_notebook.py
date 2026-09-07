@@ -28,6 +28,20 @@ OUTPUT = ROOT / "notebooks" / "colab_train.ipynb"
 DRIVE_SHARDS = "/content/drive/MyDrive/chessathon/shards"
 DRIVE_NETS = "/content/drive/MyDrive/chessathon/nets"
 
+# Twice the 60,000 steps the shipped net was trained for. The width sweep found evaluation quality
+# rising +16 Elo per doubling of width against roughly +48 in published work, on a curve that is
+# linear rather than flattening -- the signature of a net whose *capacity* is not the binding
+# constraint. Training longer at the width we already ship is the direct test of that, and unlike a
+# width change it costs nothing per node at match time.
+#
+# Doubling rather than quadrupling because there is no resume. `train.py` refuses to hand back a net
+# stranded mid-cosine-schedule, quite rightly, so a reclaimed session is a total loss rather than a
+# shortened run. At the measured 450-550k pos/s on a T4, 120,000 steps is about 65 minutes; 240,000
+# would be nearer two and a half hours and is a much worse bet against a free session with one day
+# left before the freeze.
+STEPS = 120_000
+BATCH = 16_384
+
 
 def markdown(text: str) -> dict[str, object]:
     return {
@@ -84,14 +98,12 @@ score at search leaves.
 `train.py --holdout 2` reserves `shard62`-`shard63` for validation, so 62 shards, ~255M positions,
 actually train:
 
-| | positions | epochs at 60k steps | positions/parameter, 256 | ditto, 1024 |
-|---|---|---|---|---|
-| 62 training shards | 255M | 3.9 | 1268 | 317 |
+| | positions | epochs at 120k steps | positions/parameter, 256 |
+|---|---|---|---|
+| 62 training shards | 255M | 7.7 | 1268 |
 
-The sizing is set by the width A/B rather than by the 256-wide net. The 256-wide net has ~201k
-parameters and is easy to feed; the 1024-wide variant has ~804k, and on a small corpus it would see
-so few positions per parameter that the comparison would measure which net is least starved rather
-than which architecture is better. At 285 positions/parameter no width is handicapped.
+The 256-wide net has ~201k parameters, so 255M positions is a large corpus relative to capacity and
+7.7 passes over it is not an overfitting risk -- which is the whole reason this run is worth making.
 
 Records were scattered across the 64 shards uniformly at random when they were written, so any
 subset is already a uniform random sample of the database and needs no reshuffling. That still
@@ -161,7 +173,7 @@ assert not truncated, f"partially synced shards: {{truncated}}"
 total = sum(path.stat().st_size for path in files)
 positions = total // RECORD_SIZE
 print(f"{{len(files)}} shards, {{total / 1e9:.2f}} GB, {{positions:,}} positions")
-print(f"60,000 steps x 16,384 = {{60000 * 16384 / positions:.1f}} epochs over this data")
+print(f"{STEPS:,} steps x {BATCH:,} = {{{STEPS} * {BATCH} / positions:.1f}} epochs over this data")
 """
             ),
             markdown(
@@ -188,45 +200,41 @@ an hour on the real run rather than after.
 """
             ),
             markdown(
-                """
+                f"""
 ## 5. The real run
 
-Checkpoints every 5,000 steps straight to Drive, so a reclaimed session costs the steps since the
-last checkpoint rather than the whole run.
+**Do not change `--steps {STEPS}` or `--hidden 256`, and do not stop the cell early.** The cosine
+learning-rate decay is built around the step count it is given, so a run cut short is stranded at a
+high learning rate. `train.py` refuses to hand back such a net rather than let it reach a
+measurement, which means an interrupted run is a lost run, not a shorter one. About 65 minutes on a
+T4 at the 450-550k pos/s this has measured before.
 
-Leave `--steps 60000` alone whatever you uploaded. It is the total number of *samples* the
-optimiser sees that matters, and 60,000 x 16,384 = 983M is the schedule the cosine learning-rate
-decay is built around -- cutting it short leaves the run stranded at a high learning rate. On the
-62 training shards that is 3.9 epochs, a normal number of passes for a net this small.
+Checkpoints land on Drive every 5,000 steps. They are worth having as evidence of progress, but for
+the reason above they are *not* shippable nets -- only the final write is.
+
+Why {STEPS:,} and not the 60,000 the shipped net used: the width sweep priced 256 as an interior
+optimum, with 512 at -38 Elo and 1024 at -56, so no architectural change is left. But it also found
+quality rising only +16 Elo per doubling of width where published work sees about +48, on a linear
+rather than flattening curve. That is what an undertrained net looks like, not a saturated one. More
+steps at the width we already ship is the direct test, and it costs nothing per node in the match.
 """
             ),
             code(
                 f"""
 !python -m training.train \\
     --shards {DRIVE_SHARDS} \\
-    --output {DRIVE_NETS}/net256.npz \\
-    --hidden 256 --steps 60000 --holdout 2
+    --output {DRIVE_NETS}/net256_long.npz \\
+    --hidden 256 --steps {STEPS} --holdout 2
 """
             ),
             markdown(
                 """
-## 6. Width A/B
+## 6. Width is already settled -- do not re-run it
 
-The one number the plan says we must measure ourselves, because published width deltas come from
-C++ engines at different time controls and do not transfer. All four write separate files; SPRT
-picks the winner in the engine, at our own time control. This is the actual reason to be on a GPU
-at all -- it is four runs, not one.
-"""
-            ),
-            code(
-                f"""
-# One line per run on purpose: IPython's `!` takes a single line, and backslash continuation
-# inside a loop body is not reliably joined before the shell sees it.
-for width in (128, 512, 1024):
-    print(f"=== hidden {{width}} ===", flush=True)
-    !python -m training.train --shards {DRIVE_SHARDS}"""
-                f""" --output {DRIVE_NETS}/net{{width}}.npz"""
-                """ --hidden {width} --steps 60000 --holdout 2
+An earlier version of this notebook trained 128 / 512 / 1024 here. That question is closed:
+256 is an interior optimum, 512 loses 38 Elo and 1024 loses 56, because the extra node cost outruns
+the quality gain at our time control. All four nets are in `net-files/`. Re-running them would spend
+a GPU session re-deriving a number we already have.
 """
             ),
             markdown(
