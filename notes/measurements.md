@@ -1982,3 +1982,71 @@ The larger change is to the method. `audit_truth.py` is cheap, exact, and should
 case goes in whenever a game shows the engine believing something false by rule. Correctness
 auditing finds bugs that Elo measurement structurally cannot, because a bug that costs 3 points in
 36 games is invisible next to +-18 Elo error bars.
+
+## 7 Sep -- two silent correctness bugs found by auditing, not by measuring
+
+Both of these were invisible to SPRT. Neither changes a node count in a way an arena would
+notice; both were wrong every game.
+
+### The en-passant square was hashed when no pawn could take
+
+`python-chess` omits the ep square from a FEN when no legal ep capture exists. Our `make_move`
+set `state[EP]` after every double push and hashed the file unconditionally. One position
+therefore had two different Zobrist keys depending on how it was reached -- by a double push, or
+by `set_fen`.
+
+Consequences: transposition-table entries stored before a move boundary did not match after it,
+and game-history repetition matching missed repetitions it should have caught.
+
+Measured with a 400-game random sweep comparing incremental keys against `set_fen` keys on the
+same positions:
+
+| | keys agree | disagree |
+|---|---|---|
+| before | 10678 | 1261 |
+| after | 11939 | 0 |
+
+Every disagreement was in a position immediately after a double pawn push. Perft still reports
+all positions correct after the fix, so the move generator was never affected -- only the key.
+
+Fix: `_ep_available()` in `engine/position.py`, checked in both `make_move` and `set_fen`, so the
+two paths agree by construction rather than by coincidence.
+
+### The referee claims a threefold one move early, and we walked into it
+
+`harness/referee.py:59` calls `board.outcome(claim_draw=True)`. python-chess's
+`can_claim_threefold_repetition()` returns True when the position has occurred three times **or
+when the side to move has any legal move reaching a position that already occurred twice** --
+whether or not they would ever play it. The claim is then made on our behalf.
+
+So the rule in play is not "do not repeat three times". It is: **do not hand the opponent a
+position from which a repeating move exists.**
+
+This is what drew rounds 27 and 30. Neither PGN contains an actual threefold.
+
+| round | eval when the draw was claimed | escape available? |
+|---|---|---|
+| 27 | +202 | yes -- 14 of 52 legal moves avoided it |
+| 30 | +650 | no -- all 4 legal moves at ply 101 conceded |
+
+Round 27 was a game we threw away. Round 30 was already lost by the time the claim landed; the
+loss happened earlier.
+
+Fix: `_occurrences()` counts exact key matches along the search path and back through game
+history; the move loop scores 0 for any move reaching a twice-seen position. Gated behind a
+64-bit mask of low key bits already seen twice, so the walk runs only on nodes that could qualify.
+
+Two supporting bugs found while doing it, each of which blinded the repetition check on its own:
+
+- the history walk indexed with an off-by-one (`game_count - 1 - (back - ply)`; correct is
+  `game_count - (back - ply)`, because `history_count` already excludes the root), and bailed out
+  entirely on odd plies.
+- `agent.py` never recorded our own move. The position after we move has the opponent to move and
+  is never handed back to us, so half of every game's history was missing.
+
+### The lesson, again
+
+Both bugs are of the same shape as the insufficient-material one: the engine was confidently
+wrong about something fixed by rule, and no amount of arena play would have said so. SPRT
+answers "is this change better". It cannot answer "is this correct". Those need separate
+instruments, and `tools/audit_truth.py` is where cases of the first kind go.
