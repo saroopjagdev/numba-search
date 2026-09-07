@@ -2208,3 +2208,110 @@ form that would have caught all three: *an instrument may not be used to validat
 Round 40's rook probe measured activity and called it material. Here, the engine's own eval was
 about to license endgame work justified solely by that eval. The check that settles it is cheap --
 vary depth and see whether the number moves - and it should be run before the write-up, not after.
+
+## 7 Sep -- 51 rated games, and where the ranking is actually being lost
+
+We are 48th and drifting down. The question asked was what the field is doing that we are not, and
+why we are slipping. `tools/ladder_scan.py`, new, answers it from the rated logs alone. It counts
+pieces and reads both clocks out of the `[%clk]` comments. It never calls our search, so unlike
+`blunder_scan.py` it can indict our evaluation without being scored by it.
+
+### We are not slipping. We are standing still.
+
+    rounds 10-19   5.0/10 =  50%   draws 0/10
+    rounds 20-29   5.5/10 =  55%   draws 1/10
+    rounds 30-39   6.0/10 =  60%   draws 4/10
+    rounds 40-49   5.0/10 =  50%   draws 2/10
+    rounds 50-59   5.0/10 =  50%   draws 6/10
+
+Overall 20W 17L 14D over 51 games. The score rate is flat inside noise across the whole ladder and
+there is no downtrend to explain. A flat 50% against an ever-stronger pairing pool is exactly what
+a *static* rating looks like while the field's rises. **The rank is falling because everyone else
+is still shipping strength and we have shipped only correctness since the net landed on 5 Sep.**
+The three fixes since then measured +15.6 +- 21.1 together (run 34101402252) -- real, but roughly
+one SPRT's worth of noise, against a field that has had two more days of tuning.
+
+The draw column is the visible symptom: 0 draws in rounds 10-19, 6 in rounds 50-59. As opponents
+get stronger the games we used to win from level positions end level instead.
+
+### Where the points go, by the material lead we actually held
+
+"Held" means the lead survived 20 consecutive plies, so an exchange sequence cannot manufacture it.
+
+    ahead a piece or more  n=  9   9W  0D  0L   score=100%
+    ahead a minor          n=  3   2W  1D  0L   score= 83%
+    level                  n= 34   9W 13D 12L   score= 46%
+    behind                 n=  5   0W  0D  5L   score=  0%
+
+**We convert 9 of 9. There is no conversion problem and no endgame problem.** Two thirds of our
+games are decided from a materially level position, and there we score 46%. That single number is
+the ranking. Nothing else in the table has enough games in it to matter, and both extremes are
+already at 100% and 0% where no Elo is recoverable.
+
+This kills the endgame work as a priority. KPK/KRK bitbases would improve a bucket we already win
+outright. It also kills any further conversion or contempt work: contempt was measured and rejected
+at -5.2 +- 19.3 (run 34050503435), and the draws are not us declining wins, they are us failing to
+create them.
+
+### An early read that was wrong, again, and the same way
+
+The first pass at this used *peak* material rather than held material and found what looked like a
+catastrophe -- r50 peaked +10 and finished -6, r43 peaked +8 and finished -1, r60 peaked +9 and
+finished +3. Read as "we win material and give it all back", it would have sent us straight at
+conversion and endgame work.
+
+The peaks are transient. r60's +9 is at ply 12 of 134, mid-recapture. Once the lead has to survive
+ten moves to count, the same 22 games say the opposite: 9/9 converted, and every one of those
+"collapses" was a level game throughout. Peak material is not a measurement, it is a spike.
+
+Related red herring, checked and dismissed: r60 ended `8/2K2k2/8/5N2/8/8/8/8`, our K+N against a
+bare king, which is the exact signature of the insufficient-material bug fixed earlier the same
+day. It is not a recurrence. `tools/audit_truth.py` scores 12/12 on the shipped build, and the
+position before the liquidation was K+B+N against K+R -- a theoretical draw. Correct play, not the
+bug. Worth recording because the signature will look alarming again next time.
+
+### Clocks: the field is not out-thinking us on time
+
+    over 51 games: we finish with 41.0s spare, the field with 33.4s
+    we are the one closer to the flag in 15/51
+
+We are the more comfortable side on the clock in 36 of 51 games and have never flagged. The field
+runs itself low far more often than we do -- opponents dropped under 5s in 7 games, and we scored
+only 2W 4D 1L in those, so their time trouble is not something we are punishing either.
+
+The 41s spare is not recoverable Elo, for the reason already established under "Where the clock
+work stops": the clock is a closed loop and the entire remaining headroom out to SAFETY 1.40 is
+under 9 Elo. Short games end before the geometric decay of `usable / ASSUMED_MOVES_LEFT` can spend
+the base clock, and that is unavoidable without knowing the game will end.
+
+One genuine defect found while checking this, worth recording even though it changes no shipped
+behaviour: `_budget_ms` hardcodes the increment at `0.75 * 500.0` ms. The rated control is 120s +
+0.5s so this is correct on the ladder, but our SPRT runs at 30s + 0.125s, where the agent banks an
+increment four times larger than it receives. **Every time-management SPRT we have run was measured
+on an agent under artificial time pressure.** That does not invalidate the SAFETY result -- the
+closed-loop argument is arithmetic, not empirical -- but no future clock experiment should be
+trusted from a 0.125s-increment SPRT.
+
+### The next big improvement
+
+The 46% from level positions is a pure playing-strength gap, and this file has already priced every
+architectural lever that could close it:
+
+- **Width is closed.** 256 is an interior optimum; 512 nets -38 Elo and 1024 -56, because the node
+  cost outruns the quality gain. All four nets are trained and sitting in `net-files/`.
+- **Time management is closed.** Under 9 Elo remaining, above.
+- **Contempt is closed.** -5.2 +- 19.3.
+
+What is not closed is training. The width sweep found quality growing **+16 Elo per doubling**
+against roughly +48 in published work, on a curve that is linear rather than flattening -- the
+signature of a net whose capacity is not the binding constraint. The conclusion recorded there
+stands and is now the top of the queue:
+
+> a longer training run at width 256 is worth more than any width change, because at 2.06x the node
+> cost 512 would need +55 Elo of quality and a better-trained 256 costs nothing per node at all.
+
+So: **more and better-filtered training at width 256, and the queued filtered-vs-unfiltered corpus
+A/B.** It is the only remaining lever with a measured reason to believe in it, it costs zero nodes
+per second at match time, and the shards are already on disk at `C:/Users/ssjag/chessdata/shards/`.
+Feature freeze is Wednesday night, which leaves one Colab run and one CI SPRT -- enough for exactly
+one attempt, so it should be the longest run that fits rather than several short ones.
