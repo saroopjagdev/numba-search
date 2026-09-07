@@ -214,7 +214,12 @@ def set_fen(
     if ep_field == "-":
         state[EP] = -1
     else:
-        state[EP] = (int(ep_field[1]) - 1) * 8 + (ord(ep_field[0]) - ord("a"))
+        square = (int(ep_field[1]) - 1) * 8 + (ord(ep_field[0]) - ord("a"))
+        # The pawn that just double-pushed sits behind the marked square. Drop the marker unless a
+        # capture is really available, so a FEN and a `make_move` agree on the key -- and so movegen
+        # is never offered an en-passant capture nobody can make.
+        pawn = square - 8 if state[STM] == 0 else square + 8
+        state[EP] = square if _ep_available(bb, pawn, 1 - state[STM]) else -1
     state[HALFMOVE] = int(fields[4]) if len(fields) > 4 else 0
     state[FULLMOVE] = int(fields[5]) if len(fields) > 5 else 1
 
@@ -448,6 +453,29 @@ def refresh_occupancy_jit(bb: np.ndarray) -> None:
     bb[ALL_OCC] = white | black
 
 
+@njit("boolean(uint64[:], int64, int64)", cache=False, nogil=True)
+def _ep_available(bb: np.ndarray, to_square: Int, side: Int) -> bool:
+    """Is there actually an enemy pawn placed to play the en-passant capture?
+
+    Only then does the en-passant square belong in the position, and only then may it enter the
+    Zobrist key. `board.fen()` in python-chess omits the square when no capture is on offer, so
+    hashing it unconditionally made one position hash two different ways depending on whether it
+    was reached by `make_move` or parsed by `set_fen`. Roughly one position in ten after a double
+    push was affected, and the cost was silent: transposition entries never matched across a move
+    boundary, and the repetition check never matched the game history at all.
+
+    FIDE agrees, for what it is worth -- two positions differ only if an en-passant capture is
+    genuinely available, not merely if a pawn happened to move two squares.
+    """
+    enemy_pawns = bb[WP + 6 * (1 - side)]
+    adjacent = U64(0)
+    if to_square & 7 > 0:
+        adjacent |= U64(1) << U64(to_square - 1)
+    if to_square & 7 < 7:
+        adjacent |= U64(1) << U64(to_square + 1)
+    return bool(enemy_pawns & adjacent)
+
+
 @njit("void(uint64[:], int8[:], int64[:], uint64[:], int64[:, :], uint64[:], int64, int32)")
 def make_move(
     bb: np.ndarray,
@@ -527,7 +555,7 @@ def make_move(
     state[CASTLE] = state[CASTLE] & CASTLE_MASK[from_square] & CASTLE_MASK[to_square]
     hash_key ^= CASTLE_KEYS[state[CASTLE]]
 
-    if flag == DOUBLE_PUSH:
+    if flag == DOUBLE_PUSH and _ep_available(bb, to_square, side):
         state[EP] = from_square + (8 if side == 0 else -8)
         hash_key ^= EP_FILE_KEYS[state[EP] & 7]
     else:
