@@ -2365,3 +2365,21 @@ and `/actions/runs/34101402252/timing` reports `billable.UBUNTU.total_ms = 0`. T
 time, roughly 3.7x the thinking time per game, so about 2.5 hours for 400 games across 20 shards
 against the 40.7 minutes the last run took. That is an overnight job, not a budget problem. Worth
 remembering the repository goes private again on 12 Sep, at which point minutes start counting.
+
+### 8 Sep -- baseline holdout quality for the shipped net, taken before the long run lands
+
+`tools/eval_quality.py --nets weights/nnue.npz --positions 32768`, holdout `shard62`/`shard63`,
+which no training run has seen. This is the number `net256_long.npz` (120,000 steps against this
+net's 60,000, same width, same corpus) has to beat:
+
+| eval | MAE cp | RMSE cp | WDL MAE | corr | sign |
+|---|---|---|---|---|---|
+| hce | 304.7 | 583.6 | 0.0964 | 0.693 | 78.2% |
+| nnue (shipped, 60k steps) | 248.2 | 544.4 | 0.0623 | 0.769 | 90.7% |
+
+Taken now rather than after, so the comparison is against a figure fixed in advance and there is no
+temptation to re-pick the position count once the candidate's number is visible.
+
+Screen, not verdict. `eval_quality.py`'s own docstring says it: a static comparison cannot see how
+the evaluation interacts with search, and both nets here are the same width so they cost the same
+per node. A win on this table is necessary and not sufficient; the SPRT at 120000/500 decides.
