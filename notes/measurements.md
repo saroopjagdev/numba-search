@@ -2148,3 +2148,63 @@ this time control -- a draw-heavy sample is a low-information sample. Whether th
 itself converting would-be wins into early draws, or the openings are simply too balanced, is not
 answerable from this run. If future measurements keep landing inconclusive with this draw rate, the
 opening set is the thing to change, not the game count.
+
+## 7 Sep -- rounds 46-53, and a missed-win claim that does not survive its own instrument
+
+Eight rated games: 46 W, 47 W, 48 W, 49 L, 50 D(stalemate), 51 L, 52 D(fifty moves),
+53 D(threefold). **+3 =3 -2.** No engine fault in any of them: every init 25-30 s against a 90 s
+budget, nothing on stderr, no illegal move, no flag. Both losses were played out with time to
+spare.
+
+`tools/blunder_scan.py`, depth 10:
+
+    rd result    worst drop  after our move  ply   shape
+    46 0-1              271             Qc3  133   cliff   (won anyway)
+    47 1-0               89           gxf7+   45   flat
+    48 1-0              449             Qh1   94   cliff   (won anyway)
+    49 1-0              214              h3  116   slide
+    50 1/2-1/2          114            Nxd5   26   flat
+    51 1-0              345            Qg5+   63   cliff
+    52 1/2-1/2          158             Bb2   51   slide
+    53 1/2-1/2          249             Ra3  154   flat
+
+**Round 51**, the clean loss: level (-52 to +22) until an unsound sacrifice. 61...Nxh2+ scores
+-141, 63...Qg5+ -604, 65...Qxh5+ -944, then -1901, -2582, -4384. One miscalculated attack.
+
+### The claim guard is not implicated in round 53
+
+Round 53 ended "drawn by threefold repetition" and that is a **genuine** threefold, not the
+one-move-early claim the guard addresses: `is_repetition(3)` is True on the final board, and the
+opponent was to move in check with exactly one legal move. We were the side giving perpetual.
+
+### The missed-win reading is withdrawn before it was acted on
+
+The trajectory shows us at +394 (ply 146) decaying to 0 by ply 153, which reads as a rook endgame
+we failed to convert -- and with rounds 49 and 52 also ending in rook endgames, as a pattern worth
+building endgame knowledge for.
+
+It is not supportable. Re-searching the conversion position
+`8/P3R3/5p2/4p3/5k2/8/r6r/3R2K1 b - - 2 82` with a fresh table at increasing depth:
+
+    depth   8   10   12   14   16   18
+    eval  +411 +344 +366 +319 +327 +340     move Rhg2+ at every depth
+
+Depth does not move it. So the +394 is not a shallow reading that deeper search would correct; it
+is what the evaluation says, and the evaluation is the thing under suspicion. **The only witness to
+"we were winning" is the engine being audited.** The position has 9 pieces, so no tablebase is
+available to break the tie either.
+
+Two candidate readings remain and this data cannot separate them: the position was won and we
+lacked the technique, or it was drawn and the eval is ~340 cp optimistic in simplified rook
+endings. Building endgame work on the first would be acting on an unverified number.
+
+**No change made.** "Three rook endgames in five games" is also not evidence -- rook endings are
+the most common endgame there is, so that is the base rate, not a signal.
+
+### Method
+
+This is the third time this week the file records the same failure, so the rule is restated in the
+form that would have caught all three: *an instrument may not be used to validate its own output.*
+Round 40's rook probe measured activity and called it material. Here, the engine's own eval was
+about to license endgame work justified solely by that eval. The check that settles it is cheap --
+vary depth and see whether the number moves - and it should be run before the write-up, not after.
