@@ -112,7 +112,15 @@ PIECE_VALUES = np.array([100, 320, 330, 500, 950, 10000], dtype=np.int32)
 # segfaults. The headroom below MAX_PLY covers the quiescence tail that hangs off the deepest node.
 MAX_SEARCH_PLY = 120
 
-TT_BITS = 22  # 4M entries, ~40 MB across the five arrays
+TT_BITS = 24  # 16.8M entries, ~319 MB across the five arrays
+# Was 22 (4.2M entries, ~80 MB, not the ~40 MB the comment used to claim -- the five arrays add up
+# to 19 bytes/entry, not roughly 9). Never tuned before now. A bullet game at the real 120 s + 0.5 s
+# control runs one long search interrupted by the opponent, and can turn over many multiples of 4M
+# nodes in a game, so the table was recycling entries under real pressure rather than merely holding
+# them. Measured process RSS after warm-up is ~605 MB against the 2 GB cap (`notes/invariants.md`),
+# so quadrupling the table to ~319 MB still leaves roughly 1.2 GB of headroom -- comfortable even
+# allowing for the Windows-vs-Linux measurement gap the JIT budget already has to account for.
+# `notes/measurements.md` has the SPRT.
 
 
 TTArrays = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
