@@ -239,10 +239,50 @@ a GPU session re-deriving a number we already have.
             ),
             markdown(
                 """
-## 7. Bring the weights home
+## 7. Check what is on Drive before downloading anything
 
-`net256.npz` is about 400 KB. It goes to `weights/nnue.npz` in the repository, where
-`harness/package.py` already picks up a root-level `weights` directory by default.
+Run this first, every time. It is the only place the two failure modes below become visible, and
+both of them are silent everywhere else.
+
+**The checkpoint trap.** `train.py` writes `net256_long.npz` at *every* 5,000-step checkpoint, to
+the same path, so a structurally valid net sits on Drive from step 5,000 onward. A checkpoint is
+stranded mid-cosine-schedule at a high learning rate and must not be measured or shipped, but it is
+indistinguishable from the finished net once it leaves this notebook. The modification time is the
+only tell available here: it should be a moment after cell 5 printed its final `wrote ...` line, not
+minutes before.
+
+**Only download once cell 5 has printed `wrote .../net256_long.npz`.** If cell 5 ended in a
+`SystemExit` about the stream running dry, or the session was reclaimed, there is no finished net
+and the right move is to re-run cell 5, not to download what is there.
+"""
+            ),
+            code(
+                f"""
+import time
+from pathlib import Path
+
+nets = Path('{DRIVE_NETS}')
+for net in sorted(nets.iterdir()):
+    stat = net.stat()
+    print(f"{{net.name:<20s}} {{stat.st_size / 1024:>8.0f}} KB   {{time.ctime(stat.st_mtime)}}")
+"""
+            ),
+            markdown(
+                """
+## 8. Bring the weights home -- one file per cell, deliberately
+
+The net goes to `weights/nnue.npz` in the repository, where `harness/package.py` already picks up a
+root-level `weights` directory by default.
+
+Two cells rather than one loop, because **Chrome blocks multiple downloads from a single burst.**
+This has already cost a run: a loop over every `net*.npz` in the folder delivered `net128.npz`, the
+first file alphabetically, and then silently nothing. The browser's permission prompt is easy to
+miss and the notebook reports success either way, so the failure looked exactly like a run that had
+not finished. One download per cell means one user gesture per download and no prompt to miss.
+
+The `.npz` is the quantised net the engine loads. The `.pt` is the float model, and without it the
+run can only be repeated from scratch rather than continued or re-quantised -- Drive keeps a copy,
+but a reclaimed session is a bad moment to find out the local one was never taken.
 """
             ),
             code(
@@ -250,14 +290,24 @@ a GPU session re-deriving a number we already have.
 from google.colab import files
 from pathlib import Path
 
-# Both files, and only the ones that exist. The `.npz` is the quantised net the engine loads; the
-# `.pt` is the float model, and without it a run can only be repeated from scratch rather than
-# continued or re-quantised. Drive keeps them too, but a reclaimed session is a bad moment to
-# discover the local copy was never taken.
-nets = Path('{DRIVE_NETS}')
-for net in sorted(list(nets.glob('net*.npz')) + list(nets.glob('net*.pt'))):
-    print(f"downloading {{net.name}} ({{net.stat().st_size / 1024:.0f}} KB)")
-    files.download(str(net))
+# Asserted rather than globbed. A glob is what downloaded the 128-wide net from an old sweep and
+# called it a success; naming the file and checking its size makes that failure loud.
+net = Path('{DRIVE_NETS}/net256_long.npz')
+assert net.exists(), f"{{net}} does not exist -- cell 5 has not finished. Do not download anything."
+size = net.stat().st_size
+assert 380_000 < size < 420_000, (
+    f"{{net.name}} is {{size:,}} bytes; a 256-wide net is ~403,000."
+    " This is a different width, not the net this notebook trained."
+)
+print(f"downloading {{net.name}} ({{size / 1024:.0f}} KB)")
+files.download(str(net))
+"""
+            ),
+            code(
+                f"""
+from google.colab import files
+
+files.download('{DRIVE_NETS}/net256_long.pt')
 """
             ),
             markdown(
