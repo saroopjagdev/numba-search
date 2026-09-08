@@ -2383,3 +2383,42 @@ temptation to re-pick the position count once the candidate's number is visible.
 Screen, not verdict. `eval_quality.py`'s own docstring says it: a static comparison cannot see how
 the evaluation interacts with search, and both nets here are the same width so they cost the same
 per node. A win on this table is necessary and not sufficient; the SPRT at 120000/500 decides.
+
+### 8 Sep -- 120,000 steps against 60,000: the undertraining premise does not survive the screen
+
+`net256_long.npz` (403,246 bytes, md5 `cf578bd6...`), same width, same corpus, same holdout, twice
+the steps. `verify_nnue.py` accepts it: 0 bucket disagreements over 4,096 positions, worst
+divergence 0.995 cp against a 1.0 tolerance, so the engine's arithmetic and the trainer's agree and
+nothing below is a quantisation artefact.
+
+| eval | MAE cp | RMSE cp | WDL MAE | corr | sign |
+|---|---|---|---|---|---|
+| nnue (shipped, 60k steps) | 248.2 | 544.4 | 0.0623 | 0.769 | 90.7% |
+| net256_long (120k steps) | 263.0 | 588.2 | 0.0611 | 0.763 | 91.1% |
+
+Not a win. It is *worse* in centipawn space -- MAE +14.8, RMSE +43.8, correlation -0.006 -- and
+marginally better in the two metrics closer to game outcomes, WDL MAE -0.0012 and sign agreement
++0.4 points. Doubling the training budget bought a wash.
+
+That is the interesting result, because the run was made to test a specific claim: that quality
+rising +16 Elo per doubling of width, on a linear rather than flattening curve, was the signature of
+a net whose capacity was not the binding constraint and which would therefore keep improving with
+more steps. It did not keep improving. A converged net is what this looks like, not an undertrained
+one, so **the shortfall against published per-doubling figures is not explained by training length**
+and more steps is not the lever the width sweep implied it was.
+
+Worth being clear that this does not indict the run. The premise was worth testing and cost one
+free GPU session; the answer is negative and now known rather than assumed.
+
+Ambiguous rather than a clean fail, so it still goes to an SPRT: the two metrics that moved in the
+candidate's favour are the two this file has repeatedly said are closer to what costs games, and
+runner minutes are free until 12 Sep. Baseline `ceb23fd`, candidate the same tree with the net
+swapped, 600 games at 120000/500, elo0 0 / elo1 15. If the ladder cannot see 15 Elo in it, the
+incumbent stays -- swapping a shipped net on a wash is risk with no measured return.
+
+Caveat on provenance, recorded because it cannot be checked after the fact: `train.py` overwrites
+its output at every 5,000-step checkpoint, so a stranded mid-schedule net is byte-indistinguishable
+from a finished one once it leaves Colab. The mixed result above is weak evidence *against* this
+being a checkpoint -- an early net at a high learning rate would be worse across every column, not
+better in two -- but it is not proof. The notebook now prints modification times before downloading
+so the next run does not have to reason about this.
