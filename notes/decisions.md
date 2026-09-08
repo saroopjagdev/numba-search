@@ -236,3 +236,16 @@ guess -- that is the version this beat.
 Rejected along the way: joining the ponder thread with a timeout. We have one core, so continuing
 while a second search still holds it is the one outcome worse than never pondering. The join is
 unbounded on purpose.
+
+**Amended 2026-09-06, later the same day -- REVERSED. Pondering is out.** The +63.2 Elo above is a
+phantom gain: it is real in our own harness and impossible on the real platform. Canonical platform
+docs (which `AGENTS.md:33` predates and contradicts) say the opposite of what is written above --
+"your process is suspended on the opponent's turn, background threads won't run" and "work you leave
+running between own moves not run". Our harness does not suspend anything, so a ponder thread ran
+locally and scored exactly the Elo a free half-a-game of thinking time would predict. It cannot
+occur in a rated game. `agent.py` ships with no pondering and an explicit docstring warning against
+re-adding it on the strength of any future local measurement -- see `notes/measurements.md`, "6 Sep
+-- thinking time worth 52.5 Elo per halving, pondering hiding it", and run 34033781905 (half time,
+pondering removed: -52.5 +- 20.1, REJECTED, LLR -8.91), which is the evidence that the baseline this
+entry measured against was itself confounded by pondering. Left in place above rather than deleted,
+per this file's own convention of amending over erasing.
