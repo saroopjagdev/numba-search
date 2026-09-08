@@ -2528,3 +2528,46 @@ level, and we score 45% there.** That is the ranking. Repetition draws are a sym
 cause, and are currently worth slightly more than the alternative. The conclusion only flips if we
 become better than the field from level -- which is the thing the net is meant to do, and which
 these three games cannot tell us.
+
+## 8 Sep -- audit for the finals-boundary gap: two engine changes, SPRTs dispatched
+
+The standing question is "we're on the boundary of finals qualification, what's wrong, and how do
+we get material Elo before the freeze." Since the level-position score (45%) is the ranking and the
+net is where the previous session's effort went, this pass read `engine/search.py`,
+`engine/eval.py` and `engine/nnue.py` end to end looking for genuine search-side bugs and
+never-tuned knobs, rather than re-opening anything already LOCKED.
+
+**Found a real bug: quiescence had no check-evasion handling.** It applied the stand-pat cutoff and
+searched only captures/promotions unconditionally, including when the side to move was in check --
+where standing pat is not a legal option and the only saving move can be a quiet king step or
+block. A check found at the horizon was being scored on whatever captures were lying around instead
+of on whether the king actually escapes. Fixed: when checked, quiescence now searches every legal
+reply (not just captures), does not decrement the capture-chain depth counter (an evasion is
+forced, not optional), skips delta/SEE pruning (both assume the move can be declined), and returns
+a mate score rather than a stand-pat when no legal reply exists. Verified with four targeted FENs
+(forced quiet block, forced king step off an open file with no capture available, Fool's mate,
+standard opening) plus a full smoke game -- all correct. SPRT dispatched: run `34282198961`,
+candidate `50b2358` vs baseline `7895372` (the previously shipped commit), real control
+(120000/500), 1000 games across 20 shards, seed 13.
+
+**Found a never-tuned knob: the transposition table was 22 bits (4.2M entries, ~80 MB), against a
+2 GB cap and a process RSS measured at ~605 MB after warm-up.** Nothing in `decisions.md` or here
+had ever sized or measured it. At the real 120s+0.5s control a bullet game is one long search that
+can turn over many multiples of 4M nodes, so a small table recycles entries under real pressure.
+Quadrupled to 24 bits (~319 MB), leaving roughly 1.2 GB of headroom -- comfortable even allowing for
+the Windows-vs-Linux gap the JIT budget already has to account for. The arrays are static numpy
+allocations sized once at construction, so the memory delta is fixed arithmetic, not something that
+needed empirical profiling. Verified with the same smoke game. SPRT queued behind the quiescence
+fix (candidate `74bff0c`) so the two get independent, attributable verdicts rather than a stacked
+measurement -- will dispatch once the first resolves, against baseline `50b2358`.
+
+Also amended the stale "Pondering ships" decision (see `decisions.md`) which had never been
+corrected in writing after the phantom-gain reversal, even though the code and this file already
+reflected it.
+
+Read in full and found no further candidate worth an SPRT: `engine/eval.py` (the HCE fallback,
+not on the shipped net's hot path so lower leverage even if improved) and the rest of
+`engine/search.py` -- null move, RFP, futility, LMR, aspiration windows, PVS, mate-distance pruning
+and repetition handling are all present and none showed an obvious defect on inspection. Search-
+parameter re-tuning (LMR/null-move margins) remains a candidate but is lower-confidence than a
+found bug or an unmeasured resource knob, and is next if both of the above land.
