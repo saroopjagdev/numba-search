@@ -135,7 +135,12 @@ def main() -> None:
 
     paths = sorted(glob.glob(f"{args.logs}/*.pgn"), key=_round_of)
     games = [Game(p) for p in paths]
-    games = [g for g in games if g.score >= 0.0 and g.plies >= HOLD_PLIES]
+    # Only a missing or unparseable result disqualifies a game. An earlier version also dropped
+    # anything shorter than HOLD_PLIES, which silently hid the two 10-ply repetition draws in rounds
+    # 63 and 65 -- the shortest games are the ones most worth looking at, and they were the ones
+    # being discarded. `sustained` already returns 0 below the threshold, which puts a short game in
+    # the "level" band, and that is the honest place for a game decided before either side led.
+    games = [g for g in games if g.score >= 0.0 and g.plies >= 1]
     if not games:
         print(f"no rated games found under {args.logs}/")
         return
@@ -169,6 +174,15 @@ def main() -> None:
             f"{int(c[1.0])}W {int(c[0.5])}D {int(c[0.0])}L  "
             f"score={sum(scores) / len(scores):.0%}"
         )
+
+    # Called out separately because a game that ends before either side can hold a lead for ten
+    # moves is a different animal from a played-out draw, and averages hide it completely.
+    short = [g for g in games if g.plies < HOLD_PLIES]
+    if short:
+        print(f"\ngames decided inside {HOLD_PLIES} plies:")
+        for g in short:
+            sc = {1.0: "win", 0.5: "draw", 0.0: "loss"}[g.score]
+            print(f"  round {g.round:>3}  {sc:>4} in {g.plies:>3} plies  {g.termination}")
 
     print("\nscore over time:")
     for i in range(0, len(games), 10):

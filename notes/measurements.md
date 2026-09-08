@@ -2497,3 +2497,34 @@ root, `--include engine` so the package is not an ImportError in every game. The
 hashes `cf578bd6...`, identical to the file the SPRT played. Extracted to a scratch directory and
 played from *that* rather than from the repository -- won by checkmate against `baselines/greedy` --
 and `tools/audit_truth.py` scores 12/12 on the build.
+
+### 8 Sep -- rounds 61-71, and why the repetition draws are not the leak they look like
+
+The zip was rebuilt at 14:43 UTC, so rounds 69, 70 and 71 (finished 15:05, 16:06, 17:06 UTC) are the
+first games on the 120k net. They went W D W. **That measures nothing about strength** -- a +14 Elo
+edge is about a 2% shift in score and needs thousands of games to see, so three games are noise and
+are recorded here only so nobody later mistakes them for evidence. What they do confirm is
+operational: init 25.6 / 25.4 / 26.4 s against a 90 s budget, nothing on stderr, no illegal moves,
+all three games played to a normal finish. The upload landed and the build is healthy.
+
+`ladder_scan.py` had a blind spot that hid two games: it dropped anything shorter than `HOLD_PLIES`,
+which is exactly backwards, because the shortest games are the most anomalous ones. Rounds 63 and 65
+were both **11-ply threefold-repetition draws from the same curated French Advance FEN**
+(`r3kbnr/pp1b1ppp/1qn1p3/3pP3/3P4/5N1P/PP2BPP1/RNBQK2R b KQkq - 0 8`), once from each colour, us
+shuffling `Nc3-Na4-Nc3-Na4-Nc3` as White and driving `Qa5+/Qb6` as Black. Fixed: only a missing
+result disqualifies a game now, and short games are listed explicitly.
+
+Across all 62 rated games, 8 ended by repetition (13%), three of them inside 10 moves.
+
+**The obvious conclusion from that -- add contempt so we stop taking these draws -- is wrong, and
+our own numbers say so.** We score **45% from level positions** (n=41, 10W 17D 14L). A draw is worth
+0.50. So converting a repetition into a played-on level position trades a certain 0.50 for a
+historical 0.45. Removing the two short draws does not rescue the argument either: the remaining 39
+level games are 44.9%. This is consistent with the contempt SPRT already on file at -5.2 +- 19.3,
+and it explains *why* that result was not the puzzle it looked like at the time.
+
+So the picture is unchanged and now better supported: **two-thirds of our games are decided from
+level, and we score 45% there.** That is the ranking. Repetition draws are a symptom of it, not a
+cause, and are currently worth slightly more than the alternative. The conclusion only flips if we
+become better than the field from level -- which is the thing the net is meant to do, and which
+these three games cannot tell us.
