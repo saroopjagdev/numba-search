@@ -2422,3 +2422,38 @@ from a finished one once it leaves Colab. The mixed result above is weak evidenc
 being a checkpoint -- an early net at a high learning rate would be worse across every column, not
 better in two -- but it is not proof. The notebook now prints modification times before downloading
 so the next run does not have to reason about this.
+
+### 8 Sep -- SPRT, 120k net vs 60k net at the real control: +19.5 +- 19.3, and the screen was wrong
+
+Run [34197117066](https://github.com/saroopjagdev/numba-search/actions/runs/34197117066), the first
+measurement taken at the corrected 120000/500. Baseline `ceb23fd`, candidate the same tree with
+`weights/nnue.npz` swapped, so the net is the only difference that reaches the board.
+
+```
+SPRT  H0: +0 Elo   H1: +15 Elo   120s + 0.50s
+      19 of 20 shards reported, 570 games pooled
+      INCONCLUSIVE  +146 =310 -114   LLR +1.88  in [-2.94, 2.94]
+      Elo +19.5 +- 19.3
+```
+
+Inconclusive, but leaning clearly positive: the interval is [+0.2, +38.8] and the LLR has covered
+64% of the distance to accepting H1. Wall clock 2h50m for 570 games, against the 2.5h estimated --
+the per-game model was close.
+
+**The static screen got this backwards and that is the lesson worth keeping.** `eval_quality.py` had
+the candidate *worse* on MAE, RMSE and correlation, and it is ahead by ~20 Elo over the board. Both
+nets are the same width and cost the same per node, so this is not a speed effect; it is the
+evaluation being better where games are decided while being worse on average centipawn error across
+a holdout dominated by lopsided positions. The two columns that did favour the candidate were WDL
+MAE and sign agreement, which is exactly what this file has said twice before is closer to what
+costs games. Weight them accordingly next time, and do not let a losing cp column stop an SPRT.
+
+The shard that did not report was killed by GitHub -- "the runner has received a shutdown signal"
+at 07:29 after 5 games -- not by anything in the harness. Runner reclamation is independent of the
+result so it costs sample size without biasing it, and `if: always()` on the verdict job plus the
+combiner's short-field warning did their job. Budget for losing a shard on any long run.
+
+Not shipping on this alone. An inconclusive test whose lower bound is +0.2 is not a licence to swap
+a net that is currently on the ladder, so it goes to an independent replication at a different seed
+-- `sprt.py` derives its schedule from `--seed` and `sprt_combine.py` refuses to pool across seeds,
+so a second batch is corroboration and never extra sample size.

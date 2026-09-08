@@ -56,7 +56,12 @@ on:
 jobs:
   play:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    # Measured at the real control: 570 games across 20 shards took 2h50m, so a shard plays about
+    # 6 minutes per game once init is counted. 300 minutes therefore capped a batch at roughly 900
+    # games, and the LLR grows near enough linearly in games -- 570 reached 1.88 of the 2.94 needed,
+    # so a decisive batch is around 1,000. 350 leaves 50 games per shard inside the window with an
+    # hour to spare. GitHub's own ceiling on a hosted job is 360.
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
