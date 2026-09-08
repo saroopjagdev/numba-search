@@ -2457,3 +2457,43 @@ Not shipping on this alone. An inconclusive test whose lower bound is +0.2 is no
 a net that is currently on the ladder, so it goes to an independent replication at a different seed
 -- `sprt.py` derives its schedule from `--seed` and `sprt_combine.py` refuses to pool across seeds,
 so a second batch is corroboration and never extra sample size.
+
+### 8 Sep -- the replication, and the decision to ship the 120k net
+
+Run [34212443340](https://github.com/saroopjagdev/numba-search/actions/runs/34212443340), seed 11,
+all 20 shards reporting, same control and bounds, same baseline `ceb23fd`.
+
+```
+INCONCLUSIVE  +271 =487 -242   LLR +0.63  in [-2.94, 2.94]
+Elo +10.1 +- 15.4
+```
+
+Two independent estimates of the same quantity, 1,570 games in total:
+
+| batch | games | Elo | 95% half-width | se |
+|---|---|---|---|---|
+| 34197117066, seed 7 | 570 | +19.5 | 19.3 | 9.85 |
+| 34212443340, seed 11 | 1000 | +10.1 | 15.4 | 7.86 |
+| inverse-variance combined | 1570 | **+13.8** | **12.0** | 6.14 |
+
+`tools/sprt.py:elo_with_error_bars` documents `+-` as the half-width of a 95% interval, so those are
+1.96 se and the combination is a plain inverse-variance weighting. Combined 95% CI **[+1.7, +25.8]**,
+and P(true Elo < 0) = **0.013**. The two batches agree: their difference is +9.4 with se 12.6, z =
+0.75, so the average is not hiding a disagreement between them.
+
+**Shipped on this.** Neither batch crossed its own bound and this is explicitly not an SPRT
+acceptance -- it is a meta-analysis of two, which is a weaker claim and is recorded as such. The
+case for acting on it anyway: the point estimate is +13.8 with a 1.3% chance the net is actually
+worse, the ladder score has been flat at 50-55% for 51 rounds while the field improves, and a third
+batch costs five hours to move a 6.1 se by about a fifth. That is the diminishing-returns line.
+
+Method note worth carrying: **`eval_quality.py` was wrong about this net and the SPRT was right.**
+The static screen had it losing on MAE, RMSE and correlation. Over 1,570 games it is ahead. Same
+width, same nodes, so the difference is real and not a speed artefact. Trust the WDL and sign
+columns over the centipawn ones, and never let a losing cp column veto a match.
+
+Build verification for the shipped zip: 294,451 bytes packed / 540,295 unpacked, `agent.py` at the
+root, `--include engine` so the package is not an ImportError in every game. The net inside the zip
+hashes `cf578bd6...`, identical to the file the SPRT played. Extracted to a scratch directory and
+played from *that* rather than from the repository -- won by checkmate against `baselines/greedy` --
+and `tools/audit_truth.py` scores 12/12 on the build.
