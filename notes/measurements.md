@@ -2702,8 +2702,13 @@ extension/multicut applied when the TT move is deep and trustworthy (`tt_depth >
 suite exact, `audit_truth.py` 12/12, a real game played to completion against `baselines/greedy`.
 
 SPRT dispatched: run `34365433247`, candidate `0c90a26` vs baseline `723f699` (the last known-good
-tip, i.e. after both reversions above), seed 19, real control (120000+500), elo0=0/elo1=15. Verdict
-pending -- see the next entry in this file when it lands.
+tip, i.e. after both reversions above), seed 19, real control (120000+500), elo0=0/elo1=15.
+
+**First batch: INCONCLUSIVE.** `+53 =109 -38` over 200 games (20/20 shards), **Elo +26.1 +- 32.6,
+LLR +1.03** (bounds [-2.94, 2.94]). Clearly trending positive and well above the +15 H1, but the
+error bar is wide enough that it does not clear the LLR bound either way. Same shape as the
+quiescence-fix first batch on 9 Sep -- replicate before concluding anything. Second batch dispatched:
+run `34381293249`, same candidate/baseline, seed 23, otherwise identical settings.
 
 **Full-sample follow-up**: re-ran `blunder_scan.py` across all 19 losses, not just the three above.
 
