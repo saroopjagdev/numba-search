@@ -2649,3 +2649,58 @@ the sign.
 Not spending a third batch on this: at 5 se combined the marginal batch buys a fraction of a se, the
 feature freeze is tonight, and the runner-hours are better spent verifying the final build than
 chasing a result already centred on zero. Locked in `decisions.md` alongside the TT-size entry.
+
+---
+
+## 9 Sep — ladder audit: 50.0% score, all 19 losses by checkmate, and where they actually break
+
+Two narrow SPRT reversals above are not the same thing as "no improvement exists" -- they only say
+those two specific search-parameter tweaks did not help. The actual ladder record settles whether
+more looking is warranted: parsed all 72 rated-game logs in `logs/` (rounds 10-81; rounds 10-21 have
+anonymised `[White "?"] [Black "?"]` tags and cannot have our colour inferred, so they are excluded
+rather than guessed). **Result: 19 wins, 22 draws, 19 losses over 60 identified games = 50.0%.**
+Every one of the 19 losses ended in checkmate -- no forfeits, no illegal moves, no clock losses, so
+the shortfall is pure chess strength, not robustness.
+
+Ran `tools/blunder_scan.py` (depth 8) against all 19 losses to separate "outplayed slowly" from
+"threw a good position away in one move". Three representative samples, one per shape:
+
+- **Round 68 vs JSP (cliff).** Level game into the middlegame; black blundered on move 19 (Bg5),
+  handing us +342. Our very next move (20, Rh5) collapsed that back to roughly even, and the game
+  slid from there to a loss. This is exactly what singular extensions target: the position hinged on
+  one narrow winning line at a critical node and the search did not find or hold it.
+- **Round 77 vs adashima (cliff, later).** We won a piece cleanly (Nxa1) around move 17, then a
+  sequence of king moves (Kd2/Ke2/Kd1) 5-10 plies later threw the whole point away. Static eval
+  already has a king-attack-ring term (`engine/eval.py`, `KING_ATTACK_WEIGHT`); this reads as a
+  search-depth failure to see the danger far enough ahead of grabbing the piece, not a missing eval
+  term.
+- **Round 41 vs Something (slide, no cliff).** Down ~100-250cp from around move 10 onward with no
+  single large drop anywhere in 121 moves -- a slow, structurally worse game from a middlegame
+  decision, ground down over a long ending. Not a search-depth problem; out of scope for a search
+  change.
+
+Two of three sampled losses are the cliff shape a deeper, more selective search targets; the third
+is a genuinely different failure mode (early positional judgement / endgame technique) that no
+amount of search depth fixes on its own.
+
+**Research**: checked current engine-development consensus (chessprogramming.org, TalkChess,
+Stockfish PR history) for what a search stack at our level of maturity (NMP, RFP, LMR, check
+extension, aspiration, PVS, SEE ordering, killers/history, mate-distance pruning, NNUE) is still
+missing. Continuation/counter-move history is the other commonly-cited addition, but current
+Stockfish PR discussion puts individual increments there at roughly ~1 Elo apiece at their level --
+not worth the risk for us. TT-move singular extensions (search the position without its best move at
+reduced depth; if nothing else gets close, the position hinges on that one line and it earns a ply
+of extra depth; the same probe hands over multicut pruning for free if the reduced search already
+clears beta by itself) are the standard next addition, reported anywhere from null to +60 Elo
+depending on how sharp the rest of the search already is -- exactly the "measure it, don't reason
+about it" situation this project already has a process for.
+
+Implemented in commit `0c90a26` (`engine/search.py`): `excluded_move` threaded through every
+`negamax` call site (default 0), the TT-hit early return disabled during a verification search, and
+extension/multicut applied when the TT move is deep and trustworthy (`tt_depth >= depth - 3`,
+`bound != UPPER`, `depth >= 8`, non-mate score). Verified before dispatch: ruff/mypy clean, perft
+suite exact, `audit_truth.py` 12/12, a real game played to completion against `baselines/greedy`.
+
+SPRT dispatched: run `34365433247`, candidate `0c90a26` vs baseline `723f699` (the last known-good
+tip, i.e. after both reversions above), seed 19, real control (120000+500), elo0=0/elo1=15. Verdict
+pending -- see the next entry in this file when it lands.
