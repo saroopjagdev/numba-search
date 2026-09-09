@@ -6,3 +6,5 @@ submission.zip
 *.pgn
 .serena/
 .git-msg-tmp
+tmp_*.py
+r41_out.txt
