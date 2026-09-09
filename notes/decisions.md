@@ -249,3 +249,18 @@ re-adding it on the strength of any future local measurement -- see `notes/measu
 pondering removed: -52.5 +- 20.1, REJECTED, LLR -8.91), which is the evidence that the baseline this
 entry measured against was itself confounded by pondering. Left in place above rather than deleted,
 per this file's own convention of amending over erasing.
+
+## 2026-09-09 -- Transposition table stays at 22 bits -- LOCKED
+
+`TT_BITS` had never been tuned since it was first set. Quadrupling it to 24 bits (~319 MB, still
+comfortably inside the 2 GB budget) was tested in isolation, on its own branch, against the
+theory that a bullet game at the real control turns over many multiples of a 4M-entry table and a
+bigger one would cut collisions.
+
+**REJECTED by SPRT: -2.1 +- 13.5 Elo over 1000 games, LLR -3.02** (run 34303293131, seed 19, 9 Sep,
+candidate `73d92fe` vs baseline `7895372`). Reverted to 22 bits. See `notes/measurements.md`, "9 Sep
+-- transposition table 22 -> 24 bits: REJECTED", for the full number and reasoning.
+
+Do not re-try this without new evidence. The node counts a 4M-entry table actually sees at 120s +
+0.5s were evidently not the bottleneck the headroom-based reasoning assumed -- a useful calibration
+on how much to trust "more of a resource is usually better" without a measurement behind it.

@@ -2597,3 +2597,16 @@ Never tuned before this session (see the audit entry above). Tested standalone r
 on the quiescence fix, on an isolated branch (`tt-only` = `7895372` + only the TT commit
 cherry-picked, `73d92fe`) so its effect is attributable on its own. Run `34303293131`, seed 19, real
 control, 1000 games, vs baseline `7895372`. Result pending.
+
+## 9 Sep -- transposition table 22 -> 24 bits: REJECTED
+
+Run `34303293131`, candidate `73d92fe` (TT change only, isolated on the `tt-only` branch) vs
+baseline `7895372`, real control, seed 19, 1000 games, 20/20 shards reported: `+194 =606 -200`,
+**Elo -2.1 +- 13.5, LLR -3.02, REJECTED** (crossed the lower bound of [-2.94, 2.94]).
+
+Quadrupling the table did not help, and if anything cost a couple of Elo -- within noise of zero
+either way, but not the win the node-count reasoning predicted. Reverted to 22 bits. Read together
+with the quiescence result above: the node counts a 4M-entry table actually sees at this control
+were evidently not the bottleneck the reasoning assumed, which is a useful calibration on how much
+headroom-based reasoning to trust without a measurement backing it. Recorded as LOCKED in
+`decisions.md` so this is not re-tried without new evidence.
