@@ -2610,3 +2610,42 @@ with the quiescence result above: the node counts a 4M-entry table actually sees
 were evidently not the bottleneck the reasoning assumed, which is a useful calibration on how much
 headroom-based reasoning to trust without a measurement backing it. Recorded as LOCKED in
 `decisions.md` so this is not re-tried without new evidence.
+
+## 9 Sep -- quiescence check-evasion fix: replication also INCONCLUSIVE, combined verdict is a wash, REVERTED
+
+Run `34303326358`, candidate `50b2358` (qsearch-only branch) vs baseline `7895372`, real control,
+seed 17, 1000 games requested, 19/20 shards reported (one shard, `10`, was killed by the runner
+after 3h13m -- "lost communication with the server", not a game or code failure -- and the workflow
+combines whatever shards land, flagging a short field rather than blocking on it): `+196 =567 -187`,
+950 games pooled, **Elo +3.3 +- 14.0, LLR -1.23, INCONCLUSIVE**.
+
+Combined with the first batch by inverse-variance meta-analysis, same method as the net-swap
+decision (see 8 Sep entry above):
+
+| batch | games | Elo | 95% half-width | se |
+|---|---|---|---|---|
+| 34282198961, seed 13 | 1000 | -1.4 | 14.1 | 7.19 |
+| 34303326358, seed 17 | 950 | +3.3 | 14.0 | 7.14 |
+| inverse-variance combined | 1950 | **+1.0** | **9.9** | 5.07 |
+
+Combined 95% CI **[-9.0, +10.9]**, P(true Elo < 0) = **0.42**. The two batches do not disagree with
+each other (difference +4.7, se 10.1, z = 0.46) -- this is not one good run and one bad run, it is
+two independent measurements landing on the same conclusion: **no detectable effect either way**,
+at nearly a coin-flip on the sign. 1,950 games is a real sample, not a small one; this is a genuine
+null result, not an underpowered one.
+
+**REVERTED.** `engine/search.py`'s `quiescence()` is back to the pre-`50b2358` check-evasion-blind
+version. The reasoning behind the fix was sound chess-engine theory -- every mature engine handles
+check evasion in qsearch, and stand-pat is illegal when in check -- but sound reasoning is exactly
+the thing this project has twice now watched fail to predict a measured result (the TT-size entry
+immediately above, and the pondering reversal in `decisions.md`). Per that same discipline, a change
+does not ship on the strength of its own justification when 1,950 games of direct measurement come
+back at a coin-flip. The most likely explanation is still the one recorded after the first batch:
+negamax's check extension already gives most in-check nodes one extra full ply before they can drop
+into quiescence at all, so the fix's benefit is real but rare, and it costs a little in check-heavy
+lines via the removed depth-decrement -- close enough to cancel out that 1,950 games cannot resolve
+the sign.
+
+Not spending a third batch on this: at 5 se combined the marginal batch buys a fraction of a se, the
+feature freeze is tonight, and the runner-hours are better spent verifying the final build than
+chasing a result already centred on zero. Locked in `decisions.md` alongside the TT-size entry.

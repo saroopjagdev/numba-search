@@ -478,15 +478,6 @@ def quiescence(
     Without this the evaluation is called in the middle of an exchange and reports whatever the
     material happens to be halfway through it, which is the single largest source of nonsense in a
     naive alpha-beta. `depth` counts *down* from zero and bounds how deep the capture chain may go.
-
-    In check is the one case where none of that applies. Standing pat means "I decline to move
-    further and the static score stands" -- not a legal option when in check, since the side to
-    move has no pass. A quiet king step or a block can be the only way to survive, and skipping
-    quiet moves here would never look at either, so a check found at the horizon would be scored on
-    whatever captures happen to be lying around rather than on whether the king actually escapes.
-    When checked, every legal reply is generated and searched, not just captures, `depth` does not
-    count down (an evasion is forced, not a choice to keep hunting for exchanges), and a position
-    with no legal reply is checkmate rather than a quiet score of zero.
     """
     control[0] += 1
     if control[0] > control[1]:
@@ -498,55 +489,43 @@ def quiescence(
     if no_mating_material(bb):
         return I32(0)
 
-    side = state[STM]
-    king_square = lsb(bb[WK + 6 * side])
-    checked = is_attacked(bb, king_square, 1 - side)
-
     if use_nnue:
         stand_pat = evaluate_at(acc, output, output_bias, mailbox, ply, state[STM])
     else:
         stand_pat = evaluate(bb, mailbox, state)
     if ply >= MAX_SEARCH_PLY:
         return stand_pat
-
-    if not checked:
-        if stand_pat >= beta:
-            return stand_pat
-        if stand_pat > alpha:
-            alpha = stand_pat
-        if depth <= -8:
-            return stand_pat
+    if stand_pat >= beta:
+        return stand_pat
+    if stand_pat > alpha:
+        alpha = stand_pat
+    if depth <= -8:
+        return stand_pat
 
     offset = ply * MAX_MOVES
     count = generate_moves(bb, mailbox, state, moves, offset)
+    side = state[STM]
 
-    # Score in place, then pick lazily. When not in check, quiet moves are skipped entirely below;
-    # when in check every legal reply is a candidate, captures still tried first.
+    # Score in place, then pick lazily. Quiet moves are skipped entirely below.
     for index in range(count):
         move = moves[offset + index]
         flag = move_flag(move)
         if (flag & CAPTURE_BIT) or (flag & PROMO_BIT):
             scores[offset + index] = _mvv_lva(mailbox, move)
-        elif checked:
-            scores[offset + index] = I32(0)
         else:
             scores[offset + index] = I32(-(1 << 30))
 
-    # A mate score, not stand_pat: if nothing below finds a legal reply, this is checkmate. Only
-    # reachable when checked, since generate_moves always has at least one move otherwise (the
-    # position was reached by a legal move from the other side).
-    best = I32(-MATE + ply) if checked else stand_pat
-    found_legal = False
+    best = stand_pat
     for index in range(count):
         _pick_best(moves, scores, offset, count, index)
-        if not checked and scores[offset + index] == I32(-(1 << 30)):
-            break  # everything remaining is quiet, and we are not obliged to look at it
+        if scores[offset + index] == I32(-(1 << 30)):
+            break  # everything remaining is quiet
         move = moves[offset + index]
 
-        # Delta and SEE pruning only apply to the "hunt for a good exchange" case. When in check
-        # every reply is forced, not optional, so pruning one on the grounds that it looks bad would
-        # be discarding the only way to survive.
-        if not checked and move_flag(move) != EP_CAPTURE and not (move_flag(move) & PROMO_BIT):
+        # Delta pruning: if winning this piece outright still leaves us far below alpha, the whole
+        # capture chain is hopeless. Skipped when the position is nearly bare, where zugzwang-ish
+        # material swings make the margin unreliable.
+        if move_flag(move) != EP_CAPTURE and not (move_flag(move) & PROMO_BIT):
             victim = mailbox[move_to(move)]
             if victim != EMPTY:
                 gain = PIECE_VALUES[I32(victim) % I32(6)]
@@ -564,23 +543,19 @@ def quiescence(
                     continue
 
         make_move(bb, mailbox, state, key, undo, keys, ply, move)
-        moved_king_square = lsb(bb[WK + 6 * side])
-        if is_attacked(bb, moved_king_square, 1 - side):
+        king_square = lsb(bb[WK + 6 * side])
+        if is_attacked(bb, king_square, 1 - side):
             unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
             continue
-        found_legal = True
         # After the legality check, not before: an illegal move is about to be taken back, and
         # pushing the accumulator for it would be the most expensive part of discovering that.
         if use_nnue:
             push(acc, transformer, mailbox, ply, move, undo[ply, 0], side)
-        # A check evasion does not spend the capture-chain budget: it was not a choice to keep
-        # hunting for exchanges, so it should not count against the depth that bounds that hunt.
-        next_depth = depth if checked else depth - 1
         # fmt: off
         score = -quiescence(
             bb, mailbox, state, key, undo, keys, moves, scores,
             acc, transformer, output, output_bias,
-            ply + 1, next_depth, -beta, -alpha, use_nnue, control,
+            ply + 1, depth - 1, -beta, -alpha, use_nnue, control,
         )
         # fmt: on
         unmake_move(bb, mailbox, state, key, undo, keys, ply, move)
@@ -593,8 +568,6 @@ def quiescence(
             alpha = score
         if alpha >= beta:
             break
-    if checked and not found_legal:
-        return I32(-MATE + ply)
     return best
 
 

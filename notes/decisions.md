@@ -264,3 +264,31 @@ candidate `73d92fe` vs baseline `7895372`). Reverted to 22 bits. See `notes/meas
 Do not re-try this without new evidence. The node counts a 4M-entry table actually sees at 120s +
 0.5s were evidently not the bottleneck the headroom-based reasoning assumed -- a useful calibration
 on how much to trust "more of a resource is usually better" without a measurement behind it.
+
+## 2026-09-09 -- Quiescence stays check-evasion-blind for now -- LOCKED
+
+`quiescence()` never handled being in check specially: no check-evasion move set, stand-pat applied
+even with no legal pass, depth decrementing through a forced sequence. This is a genuine gap against
+standard chess-engine practice -- every mature engine we could name handles it -- and it was fixed
+(commit `50b2358`) and tested in isolation.
+
+**Two independent SPRT batches, 1,950 games combined by inverse-variance meta-analysis: Elo +1.0
++- 9.9, 95% CI [-9.0, +10.9], P(true Elo < 0) = 0.42.** A coin-flip on the sign, not noise hiding a
+real effect -- the two batches agree with each other (z = 0.46). See `notes/measurements.md`, 9 Sep,
+for both batches and the combination.
+
+**REVERTED.** The fix is correct chess-engine theory and the code for it is kept out of the shipped
+build rather than deleted from history (it is commit `50b2358` on `worktree-phase0-instruments`, and
+the `qsearch-only` branch pins it in isolation if it needs revisiting). The most likely reason it is
+Elo-neutral: the negamax check extension already gives most in-check nodes an extra full ply before
+they can reach quiescence at all, so the positions this fix targets are rare, and the fix's own cost
+(no depth-decrement while in check, so a check-heavy line can spend more nodes) lands close enough to
+cancel the benefit that 1,950 games cannot resolve which one wins.
+
+Do not ship this on the strength of the theory alone without new evidence. This is the second time
+this session sound reasoning about a change failed to predict its measured effect -- see the
+transposition-table entry immediately above -- and the pattern is now worth trusting over "this must
+help, it's standard practice": in a search this mature, most standard techniques already present
+correctly (null move, LMR, RFP, futility, aspiration, PVS, mate-distance pruning, SEE ordering) are
+capturing most of the available Elo, and a remaining textbook gap does not automatically mean a
+remaining textbook gain.
