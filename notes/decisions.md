@@ -292,3 +292,47 @@ help, it's standard practice": in a search this mature, most standard techniques
 correctly (null move, LMR, RFP, futility, aspiration, PVS, mate-distance pruning, SEE ordering) are
 capturing most of the available Elo, and a remaining textbook gap does not automatically mean a
 remaining textbook gain.
+
+## 2026-09-09 -- TT-move singular extensions + multicut ship -- ACCEPTED, LOCKED
+
+Motivated by a ladder audit, not by "standard practice" alone this time: 60 rated ladder games
+(rounds 22-81) scored 19W/22D/19L = 50.0%, every loss by checkmate. Running all 19 losses through
+`tools/blunder_scan.py` split them 10/19 (53%) "cliff" -- a single move threw away a good or winning
+position, the exact failure mode singular extensions target -- vs 9/19 (47%) "slide" -- already
+worse, ground down slowly, not search-fixable. See `notes/measurements.md`, 9 Sep, for the full
+per-game table. A literature check ruled out continuation/countermove history first (~1 Elo
+increments at this engine's maturity, not worth the risk) before settling on TT-move singular
+extensions + multicut as the standard next addition for an engine at this level, and specifically
+the one that targets the cliff half of the observed losses.
+
+Implemented in `engine/search.py` (commit `0c90a26`): when the TT move at a node is deep and
+trustworthy enough (`depth >= 8`, `tt_depth >= depth - 3`, not an UPPER bound), a reduced,
+null-windowed search excluding that move checks whether anything else comes within `2*depth` of the
+TT score. If nothing does, the TT move is singular and gets +1 ply when searched; if the reduced
+search itself already clears beta, the node cuts for free (multicut). Verified before spending any
+SPRT time: ruff, mypy (11 type errors from `I32`/`np.int64` width mismatches against numba's
+`Dispatcher` stub, all fixed), exact perft, `audit_truth.py` 12/12, a real completed game.
+
+**Two independent SPRT batches (120s+0.5s control, the project's real time control), combined by
+inverse-variance meta-analysis, same method as the quiescence-fix decision above:**
+
+| batch | games | record | Elo | LLR |
+|---|---|---|---|---|
+| run 34365433247, seed 19 | 200 | +53=109-38 | +26.1 +- 32.6 | +1.03 (inconclusive) |
+| run 34381293249, seed 23 | 200 | +54=114-32 | +38.4 +- 31.6 | +1.83 (inconclusive) |
+| combined | 400 | -- | **+32.4 +- 22.7** | -- |
+
+Combined 95% CI **[9.8, 55.1]**, clearly above zero. P(true Elo < 0) = 0.0025. Batch agreement
+z = 0.53 -- both batches point the same way, this is not one lucky run averaged against one unlucky
+one. Neither individual batch's LLR crossed the +-2.94 SPRT bound, but the pooled CI excluding zero
+this comfortably is treated as decisive, matching the precedent set by the earlier net-swap decision
+(+13.8 +- 12.0 Elo over 1,570 games, also accepted on a combined CI rather than a single-batch LLR
+cross). Full detail and the raw batch numbers are in `notes/measurements.md`, 9 Sep.
+
+**ACCEPTED.** This is a real, large effect relative to its noise (+32 Elo resolved from zero in 400
+games, unlike the quiescence fix's true near-zero effect that stayed unresolved after 1,950). Shipped
+in `submission.zip`, rebuilt and re-verified at the main repo root.
+
+By the audit's own arithmetic this fixes at most the cliff half of the observed losses -- the slide
+half (47%) is a positional-judgement / endgame-technique gap that no amount of search depth touches,
+and stays open as a separate, not-yet-started audit target.

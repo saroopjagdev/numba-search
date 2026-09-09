@@ -2710,6 +2710,27 @@ error bar is wide enough that it does not clear the LLR bound either way. Same s
 quiescence-fix first batch on 9 Sep -- replicate before concluding anything. Second batch dispatched:
 run `34381293249`, same candidate/baseline, seed 23, otherwise identical settings.
 
+**Second batch: also INCONCLUSIVE**, but the same direction. `+54 =114 -32` over 200 games (20/20
+shards), **Elo +38.4 +- 31.6, LLR +1.83**.
+
+**Combined by inverse-variance meta-analysis (same method as the 9 Sep quiescence-fix combination),
+400 games total:**
+
+| batch | games | Elo | 95% half-width | se |
+|---|---|---|---|---|
+| 34365433247, seed 19 | 200 | +26.1 | 32.6 | 16.63 |
+| 34381293249, seed 23 | 200 | +38.4 | 31.6 | 16.12 |
+| inverse-variance combined | 400 | **+32.4** | **22.7** | 11.58 |
+
+Combined 95% CI **[9.8, 55.1]**, entirely above zero. P(true Elo < 0) = 0.0025. The two batches agree
+with each other (z = 0.53, not a case of one good run and one bad one). Unlike the quiescence fix,
+where 1,950 games centred tightly on zero, this is a real, clearly-positive effect that a smaller
+sample can resolve because the effect size is large relative to the noise -- 400 games is enough to
+separate +32 Elo from zero even though it would not be enough to separate +1 Elo from zero.
+
+**ACCEPTED.** Singular extensions + multicut ship. Locked in `decisions.md`. `submission.zip`
+rebuilt and re-verified at the main repo root per the standing process.
+
 **Full-sample follow-up**: re-ran `blunder_scan.py` across all 19 losses, not just the three above.
 
 ```
