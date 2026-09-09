@@ -2704,3 +2704,37 @@ suite exact, `audit_truth.py` 12/12, a real game played to completion against `b
 SPRT dispatched: run `34365433247`, candidate `0c90a26` vs baseline `723f699` (the last known-good
 tip, i.e. after both reversions above), seed 19, real control (120000+500), elo0=0/elo1=15. Verdict
 pending -- see the next entry in this file when it lands.
+
+**Full-sample follow-up**: re-ran `blunder_scan.py` across all 19 losses, not just the three above.
+
+```
+ rd result    worst drop  after our move  ply   shape
+ 77 0-1              328             Ke2   21   cliff
+ 22 0-1              251            Rxb7   22   cliff
+ 68 0-1              481             Ke2   39   cliff
+ 76 1-0              302             Be6   36   cliff
+ 25 1-0              154              g5   25   slide
+ 51 1-0              245            Rxb8   59   slide
+ 56 1-0              229             Ke7   54   slide
+ 26 1-0              258             Qf6   68   cliff
+ 61 1-0              243             Bb8   65   slide
+ 66 0-1              419             Re5   33   cliff
+ 45 1-0              403             Ke4   61   cliff
+ 40 1-0              105            Ndc2   17   slide
+ 81 0-1              138             Rc1   43   slide
+ 32 0-1             2126             Kf3  144   cliff
+ 49 1-0              236              h5  110   slide
+ 73 0-1               74             Rd3   45   slide
+ 78 1-0              334             Rf1  122   cliff
+ 31 0-1             1050            Nxe5  176   cliff
+ 41 0-1              106              a4   81   slide
+```
+
+10 of 19 losses (53%) are `cliff` -- a single move of ours threw away a position that was fine or
+winning the move before, per our own deeper search. 9 of 19 are `slide` -- no single bad move,
+already the worse side well before the loss became inevitable. This confirms the three-sample read
+above generalises: roughly half the ladder's losses are exactly the horizon-effect failure singular
+extensions target, and the other half are a different problem (positional judgement / endgame
+technique) that this change cannot touch. If the SPRT below comes back positive, this ~53% is the
+ceiling on what it can fix -- the slide half needs eval or endgame work, not search depth, and stays
+open regardless of this result.
