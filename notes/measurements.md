@@ -2571,3 +2571,29 @@ not on the shipped net's hot path so lower leverage even if improved) and the re
 and repetition handling are all present and none showed an obvious defect on inspection. Search-
 parameter re-tuning (LMR/null-move margins) remains a candidate but is lower-confidence than a
 found bug or an unmeasured resource knob, and is next if both of the above land.
+
+## 9 Sep -- quiescence check-evasion fix: first batch INCONCLUSIVE, replication dispatched
+
+Run `34282198961`, candidate `50b2358` vs baseline `7895372` (real control, seed 13, 1000 games,
+20/20 shards reported): `+211 =574 -215`, **Elo -1.4 +- 14.1, LLR -2.59, INCONCLUSIVE** (bounds
+[-2.94, 2.94] -- close to the lower one).
+
+Essentially a wash, not the clear win the reasoning predicted. Plausible explanation: the negamax
+check extension already gives an in-check node one extra full ply before it can drop into
+quiescence at all, so most of the positions the fix targets were already being handled one ply
+higher up: the fix's benefit is real but rare, and it costs a little -- when in check, quiescence no
+longer decrements its capture-chain depth, so a check-heavy line (common in bullet, where sacrificial
+attacks are frequent) can spend more nodes than before. Those two effects landing close to a wash
+over 1000 games is internally consistent, not surprising in hindsight.
+
+Per the workflow's own convention (dispatch another batch only on INCONCLUSIVE, never pool across
+seeds): a second, independent batch is running now on an isolated commit pinned to exactly this
+change (`qsearch-only` branch = `50b2358`), seed 17, run `34303326358`, so the two can be combined by
+inverse-variance meta-analysis the way the net swap was. Decision on whether to ship pending that.
+
+## 9 Sep -- transposition table 22 -> 24 bits: SPRT dispatched, isolated
+
+Never tuned before this session (see the audit entry above). Tested standalone rather than stacked
+on the quiescence fix, on an isolated branch (`tt-only` = `7895372` + only the TT commit
+cherry-picked, `73d92fe`) so its effect is attributable on its own. Run `34303293131`, seed 19, real
+control, 1000 games, vs baseline `7895372`. Result pending.
