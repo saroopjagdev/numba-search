@@ -2764,3 +2764,66 @@ extensions target, and the other half are a different problem (positional judgem
 technique) that this change cannot touch. If the SPRT below comes back positive, this ~53% is the
 ceiling on what it can fix -- the slide half needs eval or endgame work, not search depth, and stays
 open regardless of this result.
+
+## 11 Sep -- rounds 82-122 (41 games): the cliff fraction dropped exactly as predicted, level-position play is still the ranking
+
+Uploads closed 11:00 today and the 13-round final-qualification Swiss ran this afternoon on the
+locked build; finalist invites went out after. `docs/rules.md` (re-fetched live): **uploads reopen
+12 Sep 10:30-14:00, London-final-only**, so this is the one remaining window before the live final
+and the question is what, if anything, is worth changing before it.
+
+Parsed the 41 new rated logs (rounds 82-122, all with a readable `Colour` field): **18W 11D 12L =
+57.3%**, every decisive game by checkmate, no forfeits or clock losses. Higher than the 50.0% over
+the prior 60 games, but 41 games is not enough on its own to call that a strength change rather than
+an easier pairing pool near the qualification boundary -- recorded as an observation, not a result.
+
+`tools/blunder_scan.py` on the 12 new losses: **3/12 (25%) cliff, 9/12 (75%) slide** -- a sharp drop
+from the 53%/47% split measured before singular extensions shipped. Consistent with, though not
+proof of, the change doing exactly the job it was accepted for: the cliff losses -- a good position
+thrown away in one move -- are most of what it targets, and they are most of what shrank. (Whether
+these 41 games were even played on the build with singular extensions is not established -- the
+platform gives no build identifier in the logs, only a per-game matchmaking tag -- so this reads as
+corroborating the SPRT, not as a second independent measurement of it.)
+
+`tools/ladder_scan.py` over all 114 rounds with a readable result (10-122; unlike `blunder_scan.py`
+it identifies us by team name in the PGN header rather than a separate `Colour` log field, so it
+covers rounds 10-21 that the checkmate/result count above could not):
+
+    ahead a piece or more   n=18   18W  0D  0L   score=100%
+    ahead a minor           n= 9    8W  1D  0L   score= 94%
+    level                   n=74   18W 31D 25L   score= 45%
+    behind                  n=13    0W  1D 12L   score=  4%
+
+Identical shape to the 51-game and 62-game reads on 7-8 Sep (46% and 45% from level positions
+respectively) -- **this is not new information, it is the same finding confirmed at nearly double
+the sample.** We still convert every material edge we hold (18/18, 8/9) and still lose every game we
+fall behind in (0/13 non-draws). Two-thirds of the ladder (74/114) is decided from a level position
+and that bucket alone is still the entire gap between us and 50%+.
+
+### What this means for the 13-hour window before the reopened upload
+
+Every lever this file has already priced for the level-position gap is still priced the same way:
+width is closed (256 is the interior optimum), time management is closed (<9 Elo of headroom, and
+that headroom needs a clock the rated games don't give us), contempt is closed (-5.2 +- 19.3, and
+the draws are missed wins, not declined ones). The search side has now been read end-to-end twice
+(8 Sep audit, this week's audit) and both passes found and disposed of everything found: quiescence
+check-evasion (reverted, wash), TT size (reverted, wash), singular extensions (accepted, +32 Elo,
+and by design only reachable through the cliff half of losses, not the level-position/slide half).
+
+The one lever still flagged and never finished is training quality: the filtered-vs-unfiltered
+corpus A/B queued on 5 Sep never ran (the `unfiltered_step10k.npz` control-arm checkpoint referenced
+then is not present in this worktree or the main repo -- it did not survive whatever cleanup
+happened after the 8 Sep net-length result superseded it), and no further training has happened
+since the 120k-step net shipped on 8 Sep. That is a real, not-yet-closed lever with a measured
+reason to believe in it (the width sweep's own +16-Elo-per-doubling curve), but it needs a Colab
+session on the user's account and a training run of hours, followed by an SPRT of hours -- tight but
+not impossible inside a 13-hour window, if started now rather than in the morning.
+
+**No new engine change is being started on the strength of this audit alone.** LMR/null-move margin
+retuning is the other queued, lower-confidence candidate from the 8 Sep audit, and this project has
+now reverted two separately-reasoned, textbook-correct changes (quiescence, TT size) that measured
+as washes -- a speculative parameter retune with no specific bug behind it is exactly the profile of
+change most likely to cost the remaining hours without moving the level-position number, which is an
+evaluation-quality gap, not a search-depth one. The currently shipped build (singular extensions
+included, `submission.zip` rebuilt and verified at the repo root on 9 Sep) is the correct thing to
+carry into the 12 Sep upload window absent a training run finishing in time.
