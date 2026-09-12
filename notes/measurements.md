@@ -2827,3 +2827,48 @@ change most likely to cost the remaining hours without moving the level-position
 evaluation-quality gap, not a search-depth one. The currently shipped build (singular extensions
 included, `submission.zip` rebuilt and verified at the repo root on 9 Sep) is the correct thing to
 carry into the 12 Sep upload window absent a training run finishing in time.
+
+## 12 Sep -- local training probed and ruled out for tonight; init cost of singular extensions measured and priced
+
+Checked whether the filtered-vs-unfiltered A/B flagged above could run locally instead of on Colab,
+since the shards for both arms are still on disk (`shards/` 12 GB unfiltered, `shards_quiet/` 7.9 GB
+filtered) and this machine is free right now. It cannot: a 200-step CPU probe on `training.train`
+measured **39,933 pos/s**, so a fair 120,000-step run (matching the shipped net's step count) is
+**~13.7 hours** of training alone, before any SPRT. Not attempted. Correction to the note above:
+`unfiltered_step10k.npz` was not lost to cleanup -- it is still on disk at
+`C:/Users/ssjag/chessdata/nets/`, just never made it into the git-tracked worktree, since it is
+training output and gitignored by design. It remains unusable for the A/B on its own (10k steps
+against the shipped net's 120k is not a fair comparison), but the corpus itself is intact and ready
+whenever a GPU session is.
+
+Separately, prompted by the user noticing recent init times around 30s: pulled every rated log's
+`Ready in` line, rounds 20-122 (n=103). There is a real, clean step-change, not creep or noise:
+
+    rounds 20-90 (pre singular extensions)   n=71   mean 24.5s   max 45.1s (round 31, known load outlier)
+    rounds 91-122 (post singular extensions) n=32   mean 35.1s   max 39.0s
+
+The boundary lines up with the shipped commit: round 90 finished 2026-09-09 21:09 UTC, round 91 at
+2026-09-10 07:07 UTC, spanning the window the `0c90a26` build would have gone live after upload.
+Reproduced directly rather than trusting the correlation: built the pre-change tree from `723f699`
+in a scratch directory (`agent.py` + all of `engine/` at that commit, same `weights/nnue.npz`) and
+timed real `harness.sandbox.Agent.start()` calls against it and against HEAD, four runs each,
+serially, nothing else running:
+
+    723f699 (pre)   24.7s  25.0s  25.7s  26.0s   mean 25.4s
+    HEAD (post)     30.7s  33.7s  34.3s  36.9s   mean 33.9s
+
+Confirms it: singular extensions cost **roughly +9-10s of JIT compile time**, both locally and on
+the platform, most likely from numba specialising a larger `negamax` body around the new
+verification-search recursive call and the `excluded_move` parameter threaded through every call
+site. This was not measured or priced at the time the change was accepted -- the SPRT decision was
+made purely on playing strength, and init cost should have been checked before shipping, per this
+file's own standing rule to re-run the JIT figure after every change that touches a jitted function.
+
+**Not a problem tonight, but real margin was spent.** 39.0s against the 90s absolute limit / 75s
+hard cap / 60s target leaves about 36-51s of headroom depending which line you hold it to, against
+roughly 45-65s before. No action taken: the plan's own risk framing is "an init overrun is an
+instant loss in every game," which argues for tracking this, not for reverting a +32 Elo change over
+a cost that is still comfortably inside every stated budget. Recorded so the next change that touches
+`negamax` is priced against 35s baseline, not the stale 25s one, and so a future pathological spike
+(the plan's own named failure mode, 30s becoming 100s) is judged against how much of the budget is
+actually still free rather than against a number that is ten seconds out of date.
