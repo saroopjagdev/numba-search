@@ -336,3 +336,37 @@ in `submission.zip`, rebuilt and re-verified at the main repo root.
 By the audit's own arithmetic this fixes at most the cliff half of the observed losses -- the slide
 half (47%) is a positional-judgement / endgame-technique gap that no amount of search depth touches,
 and stays open as a separate, not-yet-started audit target.
+
+## 12 Sep -- singular extensions REVERTED: the 90s init budget in the plan doc was qualifiers-only
+
+The rules doc (re-fetched live, `https://aichessathon.com/docs/rules.md`) states plainly, and had
+not been read closely enough before now: **"Init budget: 90s to import your bot during qualifiers,
+30s at the final."** Everything in this project's plan and every init measurement to date (the
+60s target, 75s hard cap, the "39.0s max, comfortably under budget" verdict logged in
+`measurements.md` earlier today) was reasoned against the 90s qualifier number. The final, live
+today, runs on 30s.
+
+Discovered from evidence, not the rules doc, first: 7 practice-round logs appeared in `logs/`
+(`Practice round 1-7`, 09:42-10:41 UTC today) with `Budget 30.0 s`. Six of seven show `Ready in
+Never` / `Used Over` -- instant init-loss, every game. The one that squeaked through did so at
+`29.9 s` / `100 percent` used. The shipped build (singular extensions, mean ~33.9s locally / ~35.1s
+on the qualifier platform per this morning's measurement) fails the 30s cap essentially every time.
+
+No time for a partial fix or further tuning -- reverted singular extensions outright (`engine/search.py`
+back to its pre-`0c90a26` state, 1263 -> 1217 lines) rather than trying to shave compile time some
+other way under time pressure with the final's upload window already open. Re-verified from scratch
+on the reverted build: ruff and mypy clean, `audit_truth.py` 12/12, a real game via `harness.play`
+won by checkmate. Timed against the real 30s cap with `harness.sandbox.Agent.start(30.0)`, the
+platform's own init mechanism, twice -- once on the source tree (6 runs: 21.0-26.5s, all OK) and
+again on the actual extracted `submission.zip` contents (4 runs: 19.4-26.2s, all OK). Rebuilt
+`submission.zip`, copied to the repo root, both copies confirmed byte-identical (`md5sum
+96695fe56a8d431f1f6b367f92a1b111`).
+
+**REVERTED, not just for tonight.** The +32.4 +-22.7 Elo singular extensions bought at the board is
+real, but it is worthless if roughly 6 games in 7 never start. This is not a close call between two
+positive numbers -- it is a certain, large loss (instant forfeit) against a probabilistic strength
+gain that cannot be collected if the game never begins. Re-open only alongside a compile-time fix
+that gets the same feature under the 30s cap with real margin (the reverted build's own worst
+observed run, 26.5s, leaves under 3.5s against a hard 30s wall, which is thin but is what ships
+today given the window is open now). Do not re-add singular extensions, multicut, or any other
+change to `negamax` before re-timing against 30s specifically, not the stale 90s/75s figures.

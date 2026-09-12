@@ -575,7 +575,7 @@ def quiescence(
     "int32(uint64[:], int8[:], int64[:], uint64[:], int64[:, :], uint64[:], int32[:], int32[:],"
     " int16[:, :, :], int16[:, :], int16[:, :], int32[:],"
     " uint64[:], int32[:], int32[:], int16[:], int8[:], int32[:, :], int32[:, :], uint64[:],"
-    " uint64[:], int64, uint64, int64, int64, int32, int32, boolean, boolean, int64, int64[:])",
+    " uint64[:], int64, uint64, int64, int64, int32, int32, boolean, boolean, int64[:])",
     cache=False,
     # Releases the GIL for the whole call, which is what makes pondering possible: the main thread
     # has to be able to run Python -- to accept the next `get_move` and stop us -- while a ponder
@@ -619,7 +619,6 @@ def negamax(
     beta: np.int32,
     allow_null: bool,
     use_nnue: bool,
-    excluded_move: Int,
     control: np.ndarray,
 ) -> np.int32:
     control[0] += 1
@@ -671,10 +670,7 @@ def negamax(
     stored_move = I32(0)
     if tt_key[index_tt] == key[0]:
         stored_move = tt_move[index_tt]
-        # A singular-verification search (excluded_move != 0) exists only to answer "can anything
-        # beat singular_beta without the TT move", so an early TT-hit return here would let the
-        # very entry we are trying to verify short-circuit the verification.
-        if not root and excluded_move == 0 and tt_depth[index_tt] >= depth:
+        if not root and tt_depth[index_tt] >= depth:
             stored = I32(tt_score[index_tt])
             # Mate scores are stored relative to the node they were found at, so they have to be
             # re-based on the way out. Storing them absolute is the classic silent TT bug.
@@ -732,7 +728,7 @@ def negamax(
             acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
             tt_depth, tt_bound, killers, history, path,
             game_keys, game_count, claim_mask, ply + 1, depth - 1 - reduction,
-            -beta, -beta + I32(1), False, use_nnue, np.int64(0), control,
+            -beta, -beta + I32(1), False, use_nnue, control,
         )
         # fmt: on
         state[STM] = side
@@ -756,51 +752,9 @@ def negamax(
     legal = 0
     original_alpha = alpha
 
-    # Singular extensions: if a reduced, null-windowed search of every move *except* the TT move
-    # cannot get near the TT's own score, that "everything else is clearly worse" is itself
-    # evidence the position hinges on this one line, and it is worth a ply of extra depth when we
-    # search it. Multicut is the free half of the same probe: if even that handicapped search
-    # already clears beta, the whole node is a cut no matter what the TT move does.
-    extension = np.int64(0)
-    if (
-        not root
-        and excluded_move == 0
-        and stored_move != 0
-        and depth >= 8
-        and tt_depth[index_tt] >= depth - 3
-        and tt_bound[index_tt] != UPPER
-    ):
-        tt_score_adj = I32(tt_score[index_tt])
-        if tt_score_adj > MATE_THRESHOLD:
-            tt_score_adj -= I32(ply)
-        elif tt_score_adj < -MATE_THRESHOLD:
-            tt_score_adj += I32(ply)
-        if -MATE_THRESHOLD < tt_score_adj < MATE_THRESHOLD:
-            singular_beta = tt_score_adj - I32(2) * I32(depth)
-            singular_depth = (depth - 1) // 2
-            # fmt: off
-            singular_score = negamax(
-                bb, mailbox, state, key, undo, keys, moves, scores,
-                acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
-                tt_depth, tt_bound, killers, history, path,
-                game_keys, game_count, claim_mask, ply, singular_depth,
-                singular_beta - I32(1), singular_beta, False, use_nnue,
-                np.int64(stored_move), control,
-            )
-            # fmt: on
-            if control[2]:
-                return I32(0)
-            if singular_score < singular_beta:
-                extension = np.int64(1)
-            elif singular_beta >= beta:
-                return singular_beta
-
     for index in range(count):
         _pick_best(moves, scores, offset, count, index)
         move = moves[offset + index]
-        if move == excluded_move:
-            continue
-        move_ext = extension if move == stored_move else np.int64(0)
         flag = move_flag(move)
         quiet = not ((flag & CAPTURE_BIT) or (flag & PROMO_BIT))
 
@@ -862,8 +816,8 @@ def negamax(
                 bb, mailbox, state, key, undo, keys, moves, scores,
                 acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                 tt_depth, tt_bound, killers, history, path,
-                game_keys, game_count, claim_mask, ply + 1, depth - 1 + move_ext,
-                -beta, -alpha, True, use_nnue, np.int64(0), control,
+                game_keys, game_count, claim_mask, ply + 1, depth - 1,
+                -beta, -alpha, True, use_nnue, control,
             )
         else:
             # Zero-window probe, reduced. Two things can send us back for a full search: the probe
@@ -872,24 +826,24 @@ def negamax(
                 bb, mailbox, state, key, undo, keys, moves, scores,
                 acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                 tt_depth, tt_bound, killers, history, path,
-                game_keys, game_count, claim_mask, ply + 1, depth - 1 - reduction + move_ext,
-                -alpha - I32(1), -alpha, True, use_nnue, np.int64(0), control,
+                game_keys, game_count, claim_mask, ply + 1, depth - 1 - reduction,
+                -alpha - I32(1), -alpha, True, use_nnue, control,
             )
             if score > alpha and reduction > 0:
                 score = -negamax(
                     bb, mailbox, state, key, undo, keys, moves, scores,
                     acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                     tt_depth, tt_bound, killers, history, path,
-                    game_keys, game_count, claim_mask, ply + 1, depth - 1 + move_ext,
-                    -alpha - I32(1), -alpha, True, use_nnue, np.int64(0), control,
+                    game_keys, game_count, claim_mask, ply + 1, depth - 1,
+                    -alpha - I32(1), -alpha, True, use_nnue, control,
                 )
             if score > alpha and score < beta:
                 score = -negamax(
                     bb, mailbox, state, key, undo, keys, moves, scores,
                     acc, transformer, output, output_bias, tt_key, tt_move, tt_score,
                     tt_depth, tt_bound, killers, history, path,
-                    game_keys, game_count, claim_mask, ply + 1, depth - 1 + move_ext,
-                    -beta, -alpha, True, use_nnue, np.int64(0), control,
+                    game_keys, game_count, claim_mask, ply + 1, depth - 1,
+                    -beta, -alpha, True, use_nnue, control,
                 )
         # fmt: on
 
@@ -1124,7 +1078,7 @@ class Searcher:
             self.network.output_bias, *self.tt, self.killers, self.history, self.path,
             self.game_keys, history_count, self.claim_mask,
             0, depth, I32(alpha), I32(beta), True,
-            self.use_nnue, np.int64(0), self.control,
+            self.use_nnue, self.control,
         )
         # fmt: on
         return int(score), int(self.control[3]), int(self.control[0])
