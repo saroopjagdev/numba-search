@@ -1,3 +1,17 @@
+# numba-search
+
+A chess engine for [AI Chessathon](https://aichessathon.com), built on the official starter kit. Written in Python with Numba-compiled bitboard move generation and search, plus a small NNUE-style evaluation network trained in PyTorch.
+
+- `engine/`: bitboards and magics, position handling, evaluation (`eval.py`, `nnue.py`), alpha-beta search, perft.
+- `agent.py`: the submission entrypoint. Handles the clock, legality guard and warm-up of Numba compilation.
+- `training/`: dataset preprocessing and network training.
+- `baselines/`, `harness/`: reference opponents and the local match harness; strength changes are tested with SPRT in CI.
+- `notes/`: design decisions, invariants and measurements.
+
+The rest of this file is the original starter-kit documentation.
+
+---
+
 # AI Chessathon starter
 
 Fork this to build an agent for [AI Chessathon](https://aichessathon.com). It gives you a working
